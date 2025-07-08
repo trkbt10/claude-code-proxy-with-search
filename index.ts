@@ -47,6 +47,15 @@ if (!process.env.OPENAI_API_KEY) {
   throw new Error("OPENAI_API_KEY environment variable is required");
 }
 
+if (!process.env.OPENAI_MODEL) {
+  console.warn(
+    "OPENAI_MODEL environment variable is not set, using default gpt-4.1"
+  );
+}
+
+const DEFAULT_OPENAI_MODEL: OpenAIResponseModel =
+  (process.env.OPENAI_MODEL as OpenAIResponseModel) || "gpt-4.1";
+
 // ツール群の型定義
 
 // Web Search Preview ツール定義
@@ -126,8 +135,6 @@ export const textEditorFunction: OpenAITool = {
 // =============================================================================
 // 設定
 // =============================================================================
-
-const DEFAULT_OPENAI_MODEL: OpenAIResponseModel = "gpt-4.1";
 
 const modelMap: Partial<Record<ClaudeModel, OpenAIResponseModel>> = {
   "claude-3-5-sonnet-20241022": DEFAULT_OPENAI_MODEL,
