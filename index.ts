@@ -21,6 +21,7 @@ import {
 } from "openai/resources/responses/responses";
 
 import { ImageURLContentBlock as OpenAIResponseImageURLContentBlock } from "openai/resources/beta/threads";
+import { ResponsesModel as OpenAIResponseModel } from "openai/resources/shared";
 
 import {
   TextBlock as ClaudeTextBlock,
@@ -40,7 +41,6 @@ import {
   MessageParam as ClaudeMessageParam,
   Model as ClaudeModel,
 } from "@anthropic-ai/sdk/resources/messages";
-import { ResponsesModel as OpenAIResponseModel } from "openai/resources/shared";
 
 // 環境変数チェック
 if (!process.env.OPENAI_API_KEY) {
