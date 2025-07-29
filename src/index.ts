@@ -6,7 +6,7 @@ import type {
   Message as ClaudeMessage,
   MessageCreateParamsNonStreaming,
 } from "@anthropic-ai/sdk/resources/messages";
-import { StreamState } from "./utils/stream-state";
+import { streamStateManager } from "./utils/stream-state-manager";
 import { SSEWriter } from "./utils/sse-writer";
 import { claudeToResponses } from "./converters/request-converter";
 import { convertOpenAIResponseToClaude } from "./converters/openai-to-claude";
@@ -74,24 +74,25 @@ app.post("/v1/messages", async (c) => {
     🟢 [Request ${requestId}] new /v1/messages stream=${stream} at ${new Date().toISOString()}`);
 
   const claudeReq = (await c.req.json()) as ClaudeMessageCreateParams;
-  
+
   // Extract conversation ID from headers or generate one
-  const conversationId = c.req.header("x-conversation-id") || 
-    c.req.header("x-session-id") || 
+  const conversationId =
+    c.req.header("x-conversation-id") ||
+    c.req.header("x-session-id") ||
     requestId; // Use request ID as fallback
-  
+
   // Log the incoming Claude request to understand the flow
   console.log(
     `[Request ${requestId}] Incoming Claude Request (conversation: ${conversationId}):`,
     JSON.stringify(claudeReq, null, 2)
   );
-  
+
   // Get conversation context
   const context = conversationStore.getOrCreate(conversationId);
-  
+
   // Pass previous response ID to the converter
   const openaiReq = claudeToResponses(claudeReq, context.lastResponseId);
-  
+
   if (context.lastResponseId) {
     console.log(
       `[Request ${requestId}] Using previous_response_id: ${context.lastResponseId}`
@@ -119,17 +120,24 @@ app.post("/v1/messages", async (c) => {
       return c.json(claudeResponse);
     } catch (error: any) {
       console.error(`[Request ${requestId}] Non-streaming error:`, error);
-      
-      if (error.status === 400 && error.message?.includes("No tool output found")) {
+
+      if (
+        error.status === 400 &&
+        error.message?.includes("No tool output found")
+      ) {
         console.error(
           `[Request ${requestId}] Tool result error in non-streaming mode`
         );
         console.error(
           `[Request ${requestId}] Request details:`,
-          JSON.stringify({ tools: openaiReq.tools?.length, input: openaiReq.input }, null, 2)
+          JSON.stringify(
+            { tools: openaiReq.tools?.length, input: openaiReq.input },
+            null,
+            2
+          )
         );
       }
-      
+
       throw error;
     }
   }
@@ -137,7 +145,7 @@ app.post("/v1/messages", async (c) => {
   // ストリーミングモード
   return streamSSE(c, async (stream) => {
     const sse = new SSEWriter(stream);
-    const state = new StreamState(sse);
+    const state = streamStateManager.createStream(requestId, sse);
 
     // Ping タイマー開始
     state.startPingTimer();
@@ -148,34 +156,41 @@ app.post("/v1/messages", async (c) => {
     );
 
     try {
-      const openaiStream = await openai.responses.create({
-        ...openaiReq,
-        stream: true,
-      }).catch(async (error) => {
-        // Handle OpenAI API errors
-        console.error(`[Request ${requestId}] OpenAI API Error:`, error);
-        
-        if (error.status === 400 && error.message?.includes("No tool output found")) {
-          console.error(
-            `[Request ${requestId}] Tool result error - the conversation history might be incomplete`
-          );
-          console.error(
-            `[Request ${requestId}] Input items:`,
-            JSON.stringify(openaiReq.input, null, 2)
-          );
-        }
-        
-        throw error;
-      });
+      const openaiStream = await openai.responses
+        .create({
+          ...openaiReq,
+          stream: true,
+        })
+        .catch(async (error) => {
+          // Handle OpenAI API errors
+          console.error(`[Request ${requestId}] OpenAI API Error:`, error);
+
+          if (
+            error.status === 400 &&
+            error.message?.includes("No tool output found")
+          ) {
+            console.error(
+              `[Request ${requestId}] Tool result error - the conversation history might be incomplete`
+            );
+            console.error(
+              `[Request ${requestId}] Input items:`,
+              JSON.stringify(openaiReq.input, null, 2)
+            );
+          }
+
+          throw error;
+        });
 
       // ② ストリーム確立後、ここで最初の一回だけ開始イベントを送る
       await state.greeting();
 
       for await (const event of openaiStream) {
-        state.handleEvent(event);
+        await state.handleEvent(event);
 
         if (event.type === "response.completed") {
-          console.log(`✅ [Request ${requestId}] response.completed → breaking loop`);
+          console.log(
+            `✅ [Request ${requestId}] response.completed → breaking loop`
+          );
           // ここを削除
           // sse.messageStop();
           break;
@@ -187,21 +202,22 @@ app.post("/v1/messages", async (c) => {
       }
 
       console.log(`▶️ [Request ${requestId}] loop exited, stopping ping timer`);
-      
+
       // Store the response ID for future requests
-      if (state.responseId) {
+      const responseId = state.getResponseId();
+      if (responseId) {
         conversationStore.update(conversationId, {
-          lastResponseId: state.responseId,
+          lastResponseId: responseId,
         });
         console.log(
-          `[Request ${requestId}] Stored streaming response ID: ${state.responseId}`
+          `[Request ${requestId}] Stored streaming response ID: ${responseId}`
         );
       }
     } catch (err) {
       console.error(`🔥 [Request ${requestId}] Stream Error`, err);
       sse.error("api_error", String(err));
     } finally {
-      state.cleanup();
+      streamStateManager.releaseStream(requestId);
       console.log(`[Request ${requestId}] Cleanup complete`);
     }
   });

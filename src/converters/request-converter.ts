@@ -62,8 +62,9 @@ function convertClaudeToolToOpenAI(
       case "str_replace_based_edit_tool":
         return textEditorFunction;
       default:
-        return [];
+        console.warn(t, "[WARN] Unknown tool type, returning empty array");
     }
+    return [];
   }
 }
 
@@ -78,16 +79,16 @@ export function claudeToResponses(
     : req.system ?? undefined;
 
   const input: OpenAIResponses.ResponseInputItem[] = [];
-  
+
   // Process all messages to build the full conversation context
   // The Responses API needs the complete conversation history in each request
   const toolCalls = new Set<string>();
   const toolResults = new Set<string>();
-  
+
   for (const message of req.messages) {
     const convertedItems = convertClaudeMessage(message);
     input.push(...convertedItems);
-    
+
     // Track tool calls and results for validation
     for (const item of convertedItems) {
       if (item.type === "function_call" && "call_id" in item) {
@@ -96,13 +97,13 @@ export function claudeToResponses(
         toolResults.add(item.call_id);
       }
     }
-    
+
     // Log for debugging
     console.log(
       `[DEBUG] Converted ${message.role} message to ${convertedItems.length} items`
     );
   }
-  
+
   // Validate that all tool results have corresponding calls
   for (const resultId of toolResults) {
     if (!toolCalls.has(resultId)) {

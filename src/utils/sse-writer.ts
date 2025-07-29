@@ -17,7 +17,7 @@ export class SSEWriter {
       event: event.type,
       data: JSON.stringify(event),
     };
-    console.log(`[SSE]`, JSON.stringify(event, null, 2));
+    //    console.log(`[SSE]`, JSON.stringify(event, null, 2));
     await this.stream.writeSSE(msg);
   }
 

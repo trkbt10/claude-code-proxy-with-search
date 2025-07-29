@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { SSEWriter } from "./sse-writer";
 import { EventLogger } from "./logger";
+import { ContentBlockManager } from "./content-block-manager";
 import type {
   ResponseStreamEvent as OpenAIResponseStreamEvent,
   ResponseOutputItemAddedEvent as OpenAIResponseOutputItemAddedEvent,
@@ -9,29 +10,20 @@ import type {
   ResponseWebSearchCallSearchingEvent,
   ResponseWebSearchCallCompletedEvent,
   ResponseCreatedEvent,
+  ResponseContentPartAddedEvent,
+  ResponseContentPartDoneEvent,
 } from "openai/resources/responses/responses";
 
 export class StreamState {
-  textIndex = 0;
-  toolIndex = 0;
-  usage = { input_tokens: 0, output_tokens: 0 };
-  toolBlockCounter = 0;
-  toolCalls: Record<
-    string,
-    {
-      index: number;
-      name: string;
-      argsBuffer: string;
-      completed: boolean;
-      call_id?: string;
-    }
-  > = {};
-  messageId: string;
-  messageStarted = false;
-  responseId?: string;
+  private usage = { input_tokens: 0, output_tokens: 0 };
+  private contentManager = new ContentBlockManager();
+  private messageId: string;
+  private messageStarted = false;
+  private responseId?: string;
   private pingTimer?: NodeJS.Timeout;
   private logger: EventLogger;
   private streamCompleted = false;
+  private currentTextBlockId?: string;
 
   constructor(
     private sse: SSEWriter,
@@ -44,7 +36,6 @@ export class StreamState {
   async greeting() {
     if (!this.messageStarted) {
       await this.sse.messageStart(this.messageId);
-      await this.sse.textStart(this.textIndex);
       await this.sse.ping();
       this.messageStarted = true;
     }
@@ -67,10 +58,13 @@ export class StreamState {
     // Future cleanup tasks can be added here
   }
 
-  handleEvent(ev: OpenAIResponseStreamEvent) {
+  async handleEvent(ev: OpenAIResponseStreamEvent) {
     // Ignore events after stream is completed
     if (this.streamCompleted) {
-      console.warn("[StreamState] Ignoring event after stream completed:", ev.type);
+      console.warn(
+        "[StreamState] Ignoring event after stream completed:",
+        ev.type
+      );
       return;
     }
 
@@ -84,87 +78,142 @@ export class StreamState {
           this.responseId = createdEvent.response.id;
           console.log(`[StreamState] Captured response ID: ${this.responseId}`);
         }
+        const textBlock = this.contentManager.addTextBlock();
+        this.currentTextBlockId = textBlock.id;
+        await this.sse.textStart(textBlock.index);
+        this.contentManager.markStarted(textBlock.id);
         return;
 
       case "response.output_text.delta":
-        this.sse.deltaText(this.textIndex, ev.delta);
+        const currentBlock = this.currentTextBlockId
+          ? this.contentManager.getBlock(this.currentTextBlockId)
+          : this.contentManager.getCurrentTextBlock();
+        if (currentBlock) {
+          await this.sse.deltaText(currentBlock.index, ev.delta);
+        }
         break;
 
       case "response.output_text.done":
-        this.sse.textStop(this.textIndex);
-        this.textIndex++;
+        const doneBlock = this.currentTextBlockId
+          ? this.contentManager.getBlock(this.currentTextBlockId)
+          : this.contentManager.getCurrentTextBlock();
+        if (doneBlock) {
+          await this.sse.textStop(doneBlock.index);
+          this.contentManager.markCompleted(doneBlock.id);
+        }
+        this.currentTextBlockId = undefined;
         break;
 
       case "response.output_item.added":
         if (ev.item.type === "function_call" && this.isItemIdString(ev)) {
-          if (!this.toolCalls[ev.item.id]) {
-            this.toolBlockCounter++;
-            const claudeIndex = this.textIndex + this.toolBlockCounter;
-            this.toolCalls[ev.item.id] = {
-              index: claudeIndex,
-              name: ev.item.name,
-              argsBuffer: "",
-              completed: false,
-              call_id: ev.item.call_id,
-            };
-            this.sse.toolStart(claudeIndex, {
+          const toolBlock = this.contentManager.addToolBlock(
+            ev.item.id,
+            ev.item.name,
+            ev.item.call_id
+          );
+          if (!toolBlock.started) {
+            await this.sse.toolStart(toolBlock.index, {
               id: ev.item.id,
               name: ev.item.name,
             });
+            this.contentManager.markStarted(toolBlock.id);
           }
         }
         break;
 
       case "response.function_call_arguments.delta":
-        const call = this.toolCalls[ev.item_id];
-        if (call && !call.completed) {
-          call.argsBuffer += ev.delta;
-          this.sse.toolArgsDelta(call.index, ev.delta);
+        const toolBlock = this.contentManager.getToolBlock(ev.item_id);
+        if (toolBlock && !toolBlock.completed) {
+          toolBlock.argsBuffer += ev.delta;
+          await this.sse.toolArgsDelta(toolBlock.index, ev.delta);
         }
         break;
 
       case "response.output_item.done":
         if (ev.item.type === "function_call" && this.isItemIdString(ev)) {
-          const call = this.toolCalls[ev.item.id];
-          if (call && !call.completed) {
-            // Mark as completed but don't delete yet - we need to keep track for tool results
-            call.completed = true;
-            const fullArgs = JSON.parse(ev.item.arguments);
-            this.sse.toolStop(call.index);
-            // Don't delete the tool call here - keep it for tracking
+          const toolBlock = this.contentManager.getToolBlock(ev.item.id);
+          if (toolBlock && !toolBlock.completed) {
+            await this.sse.toolStop(toolBlock.index);
+            this.contentManager.markCompleted(toolBlock.id);
           }
         }
         break;
 
       case "response.content_part.added":
-      case "response.content_part.done":
-        console.warn(
-          `[StreamState] Unhandled content part event: ${ev.type}, item_id=${ev.item_id}`
+        // Content parts are complete content items (not deltas)
+        // They seem to be sent in addition to the delta events
+        // Log for now to understand the flow better
+        const contentAddedEvent = ev as ResponseContentPartAddedEvent;
+        console.log(
+          `[StreamState] content_part.added: type=${contentAddedEvent.part.type}, ` +
+            `item_id=${contentAddedEvent.item_id}, content_index=${contentAddedEvent.content_index}`
         );
+        console.log(contentAddedEvent);
+        if (contentAddedEvent.item_id) {
+          this.responseId = contentAddedEvent.item_id;
+          console.log(`[StreamState] Captured response ID: ${this.responseId}`);
+        }
+        const newTextBlock = this.contentManager.addTextBlock();
+        this.currentTextBlockId = newTextBlock.id;
+        await this.sse.textStart(newTextBlock.index);
+        this.contentManager.markStarted(newTextBlock.id);
+        if (contentAddedEvent.part.type === "output_text") {
+          await this.sse.deltaText(
+            newTextBlock.index,
+            contentAddedEvent.part.text
+          );
+        }
+
         break;
 
+      case "response.content_part.done": {
+        // Log to understand the flow
+        const contentDoneEvent = ev as ResponseContentPartDoneEvent;
+        console.log(
+          `[StreamState] content_part.done: type=${contentDoneEvent.part.type}, ` +
+            `item_id=${contentDoneEvent.item_id}, content_index=${contentDoneEvent.content_index}`
+        );
+        console.log(contentDoneEvent);
+        const textBlock = this.currentTextBlockId
+          ? this.contentManager.getBlock(this.currentTextBlockId)
+          : this.contentManager.getCurrentTextBlock();
+        if (textBlock) {
+          if (contentDoneEvent.part.type === "output_text") {
+            await this.sse.deltaText(
+              textBlock.index,
+              contentDoneEvent.part.text
+            );
+          }
+          await this.sse.textStop(textBlock.index);
+          this.contentManager.markCompleted(textBlock.id);
+        }
+        this.currentTextBlockId = undefined;
+        break;
+      }
+
       case "response.function_call_arguments.done":
-        const doneCall = this.toolCalls[ev.item_id];
-        if (doneCall && !doneCall.completed) {
-          doneCall.completed = true;
-          // Don't stop the tool here - wait for output_item.done
+        const doneToolBlock = this.contentManager.getToolBlock(ev.item_id);
+        if (doneToolBlock && !doneToolBlock.completed) {
+          // Don't mark as completed here - wait for output_item.done
+          console.log(
+            `[StreamState] Tool args done for: ${doneToolBlock.name}`
+          );
         }
         break;
 
       case "response.completed":
-        // Only stop text if we're not waiting for tool results
-        const hasActiveTool = Object.keys(this.toolCalls).length > 0;
-        
-        if (!hasActiveTool) {
-          this.sse.textStop(this.textIndex);
+        // Stop any uncompleted blocks
+        const uncompletedBlocks = this.contentManager.getUncompletedBlocks();
+        for (const block of uncompletedBlocks) {
+          if (block.type === "text") {
+            await this.sse.textStop(block.index);
+          } else if (block.type === "tool_use") {
+            await this.sse.toolStop(block.index);
+          }
+          this.contentManager.markCompleted(block.id);
         }
 
-        Object.values(this.toolCalls).forEach((tc) => {
-          if (!tc.completed) {
-            this.sse.toolStop(tc.index);
-          }
-        });
-
+        const hasActiveTool = this.contentManager.hasActiveTools();
         let stopReason: "end_turn" | "max_tokens" | "tool_use";
         const status = ev.response.status;
         const detail = ev.response.incomplete_details?.reason;
@@ -203,45 +252,45 @@ export class StreamState {
       case "response.web_search_call.in_progress":
         const webSearchInProgress = ev as ResponseWebSearchCallInProgressEvent;
         // Web検索開始をツールブロックとして送信
-        if (!this.toolCalls[webSearchInProgress.item_id]) {
-          this.toolBlockCounter++;
-          const claudeIndex = this.textIndex + this.toolBlockCounter;
-          this.toolCalls[webSearchInProgress.item_id] = {
-            index: claudeIndex,
+        const webSearchBlock = this.contentManager.addToolBlock(
+          webSearchInProgress.item_id,
+          "web_search"
+        );
+        if (!webSearchBlock.started) {
+          await this.sse.toolStart(webSearchBlock.index, {
+            id: webSearchInProgress.item_id,
             name: "web_search",
-            argsBuffer: "",
-            completed: false,
-          };
-          this.sse.toolStart(claudeIndex, { 
-            id: webSearchInProgress.item_id, 
-            name: "web_search",
-            input: { status: "in_progress" }
+            input: { status: "in_progress" },
           });
+          this.contentManager.markStarted(webSearchBlock.id);
         }
         break;
 
       case "response.web_search_call.searching":
         const webSearchSearching = ev as ResponseWebSearchCallSearchingEvent;
-        const searchCall = this.toolCalls[webSearchSearching.item_id];
-        if (searchCall && !searchCall.completed) {
+        const searchBlock = this.contentManager.getToolBlock(
+          webSearchSearching.item_id
+        );
+        if (searchBlock && !searchBlock.completed) {
           // 検索中の状態をツール引数のデルタとして送信
-          const searchingData = JSON.stringify({ 
+          const searchingData = JSON.stringify({
             status: "searching",
-            sequence: webSearchSearching.sequence_number 
+            sequence: webSearchSearching.sequence_number,
           });
-          searchCall.argsBuffer += searchingData;
-          this.sse.toolArgsDelta(searchCall.index, searchingData);
+          searchBlock.argsBuffer += searchingData;
+          await this.sse.toolArgsDelta(searchBlock.index, searchingData);
         }
         break;
 
       case "response.web_search_call.completed":
         const webSearchCompleted = ev as ResponseWebSearchCallCompletedEvent;
-        const completedCall = this.toolCalls[webSearchCompleted.item_id];
-        if (completedCall && !completedCall.completed) {
+        const completedBlock = this.contentManager.getToolBlock(
+          webSearchCompleted.item_id
+        );
+        if (completedBlock && !completedBlock.completed) {
           // Web検索完了をツールブロックの終了として送信
-          completedCall.completed = true;
-          this.sse.toolStop(completedCall.index);
-          delete this.toolCalls[webSearchCompleted.item_id];
+          await this.sse.toolStop(completedBlock.index);
+          this.contentManager.markCompleted(completedBlock.id);
         }
         break;
 
@@ -258,5 +307,26 @@ export class StreamState {
     | OpenAIResponseOutputItemDoneEvent
   ) & { item: { id: string } } {
     return typeof ev.item.id === "string";
+  }
+
+  /**
+   * Get the response ID (if captured)
+   */
+  getResponseId(): string | undefined {
+    return this.responseId;
+  }
+
+  /**
+   * Get current usage statistics
+   */
+  getUsage(): { input_tokens: number; output_tokens: number } {
+    return { ...this.usage };
+  }
+
+  /**
+   * Check if the stream is completed
+   */
+  isCompleted(): boolean {
+    return this.streamCompleted;
   }
 }
