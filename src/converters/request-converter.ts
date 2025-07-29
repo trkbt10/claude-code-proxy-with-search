@@ -70,7 +70,8 @@ function convertClaudeToolToOpenAI(
 
 export function claudeToResponses(
   req: ClaudeMessageCreateParamsBase,
-  previousResponseId?: string
+  previousResponseId?: string,
+  callIdMapping?: Map<string, string>
 ): OpenAIResponses.ResponseCreateParams {
   const model: OpenAIResponseModel =
     modelMap[req.model] ?? DEFAULT_OPENAI_MODEL;
@@ -86,7 +87,7 @@ export function claudeToResponses(
   const toolResults = new Set<string>();
 
   for (const message of req.messages) {
-    const convertedItems = convertClaudeMessage(message);
+    const convertedItems = convertClaudeMessage(message, callIdMapping);
     input.push(...convertedItems);
 
     // Track tool calls and results for validation
@@ -102,6 +103,15 @@ export function claudeToResponses(
     console.log(
       `[DEBUG] Converted ${message.role} message to ${convertedItems.length} items`
     );
+    
+    // Log specific items for debugging
+    for (const item of convertedItems) {
+      if (item.type === "function_call" && "call_id" in item) {
+        console.log(`[DEBUG] function_call: id=${item.id}, call_id=${item.call_id}, name=${item.name}`);
+      } else if (item.type === "function_call_output" && "call_id" in item) {
+        console.log(`[DEBUG] function_call_output: id=${item.id}, call_id=${item.call_id}`);
+      }
+    }
   }
 
   // Validate that all tool results have corresponding calls

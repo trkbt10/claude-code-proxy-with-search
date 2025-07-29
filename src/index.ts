@@ -25,9 +25,15 @@ const openai = new OpenAI({
 
 const app = new Hono();
 
+// Type guard for error with status
+function isErrorWithStatus(err: unknown): err is Error & { status: number } {
+  return err instanceof Error && "status" in err && typeof (err as Error & { status: unknown }).status === "number";
+}
+
 // グローバルエラーハンドラー
 app.onError((err, c) => {
   console.error("Global error handler:", err);
+  const status = isErrorWithStatus(err) ? err.status : 500;
   return c.json(
     {
       type: "error",
@@ -36,7 +42,7 @@ app.onError((err, c) => {
         message: err.message || "Internal server error",
       },
     },
-    err instanceof Error && "status" in err ? (err as any).status : 500
+    status as Parameters<typeof c.json>[1]
   );
 });
 
@@ -90,8 +96,8 @@ app.post("/v1/messages", async (c) => {
   // Get conversation context
   const context = conversationStore.getOrCreate(conversationId);
 
-  // Pass previous response ID to the converter
-  const openaiReq = claudeToResponses(claudeReq, context.lastResponseId);
+  // Pass previous response ID and call_id mapping to the converter
+  const openaiReq = claudeToResponses(claudeReq, context.lastResponseId, context.callIdMapping);
 
   if (context.lastResponseId) {
     console.log(
@@ -116,7 +122,14 @@ app.post("/v1/messages", async (c) => {
         );
       }
 
-      const claudeResponse = convertOpenAIResponseToClaude(response);
+      const { message: claudeResponse, callIdMapping } = convertOpenAIResponseToClaude(response);
+      
+      // Store call_id mapping for future requests
+      if (callIdMapping.size > 0) {
+        console.log(`[Request ${requestId}] Storing call_id mappings:`, Array.from(callIdMapping.entries()));
+        conversationStore.update(conversationId, { callIdMapping });
+      }
+      
       return c.json(claudeResponse);
     } catch (error: any) {
       console.error(`[Request ${requestId}] Non-streaming error:`, error);
@@ -203,15 +216,28 @@ app.post("/v1/messages", async (c) => {
 
       console.log(`▶️ [Request ${requestId}] loop exited, stopping ping timer`);
 
-      // Store the response ID for future requests
+      // Store the response ID and call_id mapping for future requests
       const responseId = state.getResponseId();
+      const callIdMapping = state.getCallIdMapping();
+      
+      const updates: any = {};
       if (responseId) {
-        conversationStore.update(conversationId, {
-          lastResponseId: responseId,
-        });
+        updates.lastResponseId = responseId;
         console.log(
           `[Request ${requestId}] Stored streaming response ID: ${responseId}`
         );
+      }
+      
+      if (callIdMapping.size > 0) {
+        updates.callIdMapping = callIdMapping;
+        console.log(
+          `[Request ${requestId}] Stored streaming call_id mappings:`, 
+          Array.from(callIdMapping.entries())
+        );
+      }
+      
+      if (Object.keys(updates).length > 0) {
+        conversationStore.update(conversationId, updates);
       }
     } catch (err) {
       console.error(`🔥 [Request ${requestId}] Stream Error`, err);

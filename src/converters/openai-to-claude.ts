@@ -8,10 +8,11 @@ import type {
 
 export function convertOpenAIResponseToClaude(
   openaiResponse: OpenAIResponse
-): ClaudeMessage {
+): { message: ClaudeMessage; callIdMapping: Map<string, string> } {
   // Collect all text content
   const textContent: string[] = [];
   const toolUseBlocks: ToolUseBlock[] = [];
+  const callIdMapping = new Map<string, string>(); // Maps OpenAI call_id to Claude tool_use_id
 
   // Process output items
   for (const output of openaiResponse.output || []) {
@@ -28,6 +29,12 @@ export function convertOpenAIResponseToClaude(
         name: output.name,
         input: JSON.parse(output.arguments || "{}"),
       });
+      
+      // Store the mapping if OpenAI provided a different call_id
+      if ('call_id' in output && output.call_id && output.call_id !== output.id) {
+        callIdMapping.set(output.call_id, output.id);
+        console.log(`[OpenAI->Claude] Mapping call_id: ${output.call_id} -> ${output.id}`);
+      }
     }
   }
 
@@ -75,5 +82,5 @@ export function convertOpenAIResponseToClaude(
     },
   };
 
-  return claudeMessage;
+  return { message: claudeMessage, callIdMapping };
 }

@@ -24,6 +24,7 @@ export class StreamState {
   private logger: EventLogger;
   private streamCompleted = false;
   private currentTextBlockId?: string;
+  private callIdMapping: Map<string, string> = new Map(); // Maps OpenAI call_id to Claude tool_use_id
 
   constructor(
     private sse: SSEWriter,
@@ -78,63 +79,71 @@ export class StreamState {
           this.responseId = createdEvent.response.id;
           console.log(`[StreamState] Captured response ID: ${this.responseId}`);
         }
-        const textBlock = this.contentManager.addTextBlock();
-        this.currentTextBlockId = textBlock.id;
-        await this.sse.textStart(textBlock.index);
-        this.contentManager.markStarted(textBlock.id);
+        const { block: textBlock, metadata: textMeta } = this.contentManager.addTextBlock();
+        this.currentTextBlockId = textMeta.id;
+        await this.sse.textStart(textMeta.index);
+        this.contentManager.markStarted(textMeta.id);
         return;
 
       case "response.output_text.delta":
-        const currentBlock = this.currentTextBlockId
+        const currentBlockResult = this.currentTextBlockId
           ? this.contentManager.getBlock(this.currentTextBlockId)
           : this.contentManager.getCurrentTextBlock();
-        if (currentBlock) {
-          await this.sse.deltaText(currentBlock.index, ev.delta);
+        if (currentBlockResult) {
+          await this.sse.deltaText(currentBlockResult.metadata.index, ev.delta);
+          this.contentManager.updateTextContent(currentBlockResult.metadata.id, ev.delta);
         }
         break;
 
       case "response.output_text.done":
-        const doneBlock = this.currentTextBlockId
+        const doneBlockResult = this.currentTextBlockId
           ? this.contentManager.getBlock(this.currentTextBlockId)
           : this.contentManager.getCurrentTextBlock();
-        if (doneBlock) {
-          await this.sse.textStop(doneBlock.index);
-          this.contentManager.markCompleted(doneBlock.id);
+        if (doneBlockResult) {
+          await this.sse.textStop(doneBlockResult.metadata.index);
+          this.contentManager.markCompleted(doneBlockResult.metadata.id);
         }
         this.currentTextBlockId = undefined;
         break;
 
       case "response.output_item.added":
         if (ev.item.type === "function_call" && this.isItemIdString(ev)) {
-          const toolBlock = this.contentManager.addToolBlock(
+          const { block: toolBlock, metadata: toolMeta } = this.contentManager.addToolBlock(
             ev.item.id,
             ev.item.name,
             ev.item.call_id
           );
-          if (!toolBlock.started) {
-            await this.sse.toolStart(toolBlock.index, {
+          
+          // Store the mapping from OpenAI call_id to Claude tool_use_id
+          if (ev.item.call_id) {
+            this.callIdMapping.set(ev.item.call_id, ev.item.id);
+            console.log(`[StreamState] Stored call_id mapping: ${ev.item.call_id} -> ${ev.item.id}`);
+          }
+          
+          if (!toolMeta.started) {
+            await this.sse.toolStart(toolMeta.index, {
               id: ev.item.id,
               name: ev.item.name,
             });
-            this.contentManager.markStarted(toolBlock.id);
+            this.contentManager.markStarted(toolMeta.id);
           }
         }
         break;
 
       case "response.function_call_arguments.delta":
-        const toolBlock = this.contentManager.getToolBlock(ev.item_id);
-        if (toolBlock && !toolBlock.completed) {
-          toolBlock.argsBuffer += ev.delta;
-          await this.sse.toolArgsDelta(toolBlock.index, ev.delta);
+        const toolBlockResult = this.contentManager.getToolBlock(ev.item_id);
+        if (toolBlockResult && !toolBlockResult.metadata.completed) {
+          toolBlockResult.metadata.argsBuffer = (toolBlockResult.metadata.argsBuffer || "") + ev.delta;
+          await this.sse.toolArgsDelta(toolBlockResult.metadata.index, ev.delta);
         }
         break;
 
       case "response.output_item.done":
         if (ev.item.type === "function_call" && this.isItemIdString(ev)) {
-          const toolBlock = this.contentManager.getToolBlock(ev.item.id);
-          if (toolBlock && !toolBlock.completed) {
-            await this.sse.toolStop(toolBlock.index);
-            this.contentManager.markCompleted(toolBlock.id);
+          const toolBlockResult = this.contentManager.getToolBlock(ev.item.id);
+          if (toolBlockResult && !toolBlockResult.metadata.completed) {
+            await this.sse.toolStop(toolBlockResult.metadata.index);
+            this.contentManager.markCompleted(toolBlockResult.metadata.id);
           }
         }
         break;
@@ -153,15 +162,16 @@ export class StreamState {
           this.responseId = contentAddedEvent.item_id;
           console.log(`[StreamState] Captured response ID: ${this.responseId}`);
         }
-        const newTextBlock = this.contentManager.addTextBlock();
-        this.currentTextBlockId = newTextBlock.id;
-        await this.sse.textStart(newTextBlock.index);
-        this.contentManager.markStarted(newTextBlock.id);
+        const { block: newTextBlock, metadata: newTextMeta } = this.contentManager.addTextBlock();
+        this.currentTextBlockId = newTextMeta.id;
+        await this.sse.textStart(newTextMeta.index);
+        this.contentManager.markStarted(newTextMeta.id);
         if (contentAddedEvent.part.type === "output_text") {
           await this.sse.deltaText(
-            newTextBlock.index,
+            newTextMeta.index,
             contentAddedEvent.part.text
           );
+          this.contentManager.updateTextContent(newTextMeta.id, contentAddedEvent.part.text);
         }
 
         break;
@@ -174,29 +184,30 @@ export class StreamState {
             `item_id=${contentDoneEvent.item_id}, content_index=${contentDoneEvent.content_index}`
         );
         console.log(contentDoneEvent);
-        const textBlock = this.currentTextBlockId
+        const textBlockResult = this.currentTextBlockId
           ? this.contentManager.getBlock(this.currentTextBlockId)
           : this.contentManager.getCurrentTextBlock();
-        if (textBlock) {
+        if (textBlockResult) {
           if (contentDoneEvent.part.type === "output_text") {
             await this.sse.deltaText(
-              textBlock.index,
+              textBlockResult.metadata.index,
               contentDoneEvent.part.text
             );
+            this.contentManager.updateTextContent(textBlockResult.metadata.id, contentDoneEvent.part.text);
           }
-          await this.sse.textStop(textBlock.index);
-          this.contentManager.markCompleted(textBlock.id);
+          await this.sse.textStop(textBlockResult.metadata.index);
+          this.contentManager.markCompleted(textBlockResult.metadata.id);
         }
         this.currentTextBlockId = undefined;
         break;
       }
 
       case "response.function_call_arguments.done":
-        const doneToolBlock = this.contentManager.getToolBlock(ev.item_id);
-        if (doneToolBlock && !doneToolBlock.completed) {
+        const doneToolBlockResult = this.contentManager.getToolBlock(ev.item_id);
+        if (doneToolBlockResult && !doneToolBlockResult.metadata.completed) {
           // Don't mark as completed here - wait for output_item.done
           console.log(
-            `[StreamState] Tool args done for: ${doneToolBlock.name}`
+            `[StreamState] Tool args done for: ${doneToolBlockResult.block.name}`
           );
         }
         break;
@@ -204,13 +215,13 @@ export class StreamState {
       case "response.completed":
         // Stop any uncompleted blocks
         const uncompletedBlocks = this.contentManager.getUncompletedBlocks();
-        for (const block of uncompletedBlocks) {
+        for (const { block, metadata } of uncompletedBlocks) {
           if (block.type === "text") {
-            await this.sse.textStop(block.index);
+            await this.sse.textStop(metadata.index);
           } else if (block.type === "tool_use") {
-            await this.sse.toolStop(block.index);
+            await this.sse.toolStop(metadata.index);
           }
-          this.contentManager.markCompleted(block.id);
+          this.contentManager.markCompleted(metadata.id);
         }
 
         const hasActiveTool = this.contentManager.hasActiveTools();
@@ -252,45 +263,45 @@ export class StreamState {
       case "response.web_search_call.in_progress":
         const webSearchInProgress = ev as ResponseWebSearchCallInProgressEvent;
         // Web検索開始をツールブロックとして送信
-        const webSearchBlock = this.contentManager.addToolBlock(
+        const { block: webSearchBlock, metadata: webSearchMeta } = this.contentManager.addToolBlock(
           webSearchInProgress.item_id,
           "web_search"
         );
-        if (!webSearchBlock.started) {
-          await this.sse.toolStart(webSearchBlock.index, {
+        if (!webSearchMeta.started) {
+          await this.sse.toolStart(webSearchMeta.index, {
             id: webSearchInProgress.item_id,
             name: "web_search",
             input: { status: "in_progress" },
           });
-          this.contentManager.markStarted(webSearchBlock.id);
+          this.contentManager.markStarted(webSearchMeta.id);
         }
         break;
 
       case "response.web_search_call.searching":
         const webSearchSearching = ev as ResponseWebSearchCallSearchingEvent;
-        const searchBlock = this.contentManager.getToolBlock(
+        const searchBlockResult = this.contentManager.getToolBlock(
           webSearchSearching.item_id
         );
-        if (searchBlock && !searchBlock.completed) {
+        if (searchBlockResult && !searchBlockResult.metadata.completed) {
           // 検索中の状態をツール引数のデルタとして送信
           const searchingData = JSON.stringify({
             status: "searching",
             sequence: webSearchSearching.sequence_number,
           });
-          searchBlock.argsBuffer += searchingData;
-          await this.sse.toolArgsDelta(searchBlock.index, searchingData);
+          searchBlockResult.metadata.argsBuffer = (searchBlockResult.metadata.argsBuffer || "") + searchingData;
+          await this.sse.toolArgsDelta(searchBlockResult.metadata.index, searchingData);
         }
         break;
 
       case "response.web_search_call.completed":
         const webSearchCompleted = ev as ResponseWebSearchCallCompletedEvent;
-        const completedBlock = this.contentManager.getToolBlock(
+        const completedBlockResult = this.contentManager.getToolBlock(
           webSearchCompleted.item_id
         );
-        if (completedBlock && !completedBlock.completed) {
+        if (completedBlockResult && !completedBlockResult.metadata.completed) {
           // Web検索完了をツールブロックの終了として送信
-          await this.sse.toolStop(completedBlock.index);
-          this.contentManager.markCompleted(completedBlock.id);
+          await this.sse.toolStop(completedBlockResult.metadata.index);
+          this.contentManager.markCompleted(completedBlockResult.metadata.id);
         }
         break;
 
@@ -314,6 +325,10 @@ export class StreamState {
    */
   getResponseId(): string | undefined {
     return this.responseId;
+  }
+
+  getCallIdMapping(): Map<string, string> {
+    return new Map(this.callIdMapping);
   }
 
   /**

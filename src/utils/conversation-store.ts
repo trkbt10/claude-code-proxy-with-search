@@ -2,6 +2,7 @@ interface ConversationContext {
   messages: any[];
   lastToolCalls?: Record<string, any>;
   lastResponseId?: string;
+  callIdMapping?: Map<string, string>; // Maps OpenAI call_id to Claude tool_use_id
   createdAt: Date;
   lastAccessedAt: Date;
 }

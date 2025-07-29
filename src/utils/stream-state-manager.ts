@@ -7,6 +7,7 @@ import type { SSEWriter } from "./sse-writer";
  */
 export class StreamStateManager {
   private activeStreams: Map<string, StreamState> = new Map();
+  private callIdMappings: Map<string, Map<string, string>> = new Map(); // Maps requestId to call_id mappings
 
   /**
    * Create a new StreamState instance for a request
