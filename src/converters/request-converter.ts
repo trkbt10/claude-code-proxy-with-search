@@ -109,7 +109,7 @@ export function claudeToResponses(
       if (item.type === "function_call" && "call_id" in item) {
         console.log(`[DEBUG] function_call: id=${item.id}, call_id=${item.call_id}, name=${item.name}`);
       } else if (item.type === "function_call_output" && "call_id" in item) {
-        console.log(`[DEBUG] function_call_output: id=${item.id}, call_id=${item.call_id}`);
+        console.log(`[DEBUG] function_call_output: id=${item.id}, call_id=${item.call_id}, status=${item.status}`);
       }
     }
   }

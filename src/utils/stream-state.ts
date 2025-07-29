@@ -108,16 +108,23 @@ export class StreamState {
 
       case "response.output_item.added":
         if (ev.item.type === "function_call" && this.isItemIdString(ev)) {
+          console.log(`[StreamState] function_call event:`, {
+            id: ev.item.id,
+            call_id: ev.item.call_id,
+            name: ev.item.name,
+            type: ev.item.type
+          });
+          
           const { block: toolBlock, metadata: toolMeta } = this.contentManager.addToolBlock(
             ev.item.id,
             ev.item.name,
             ev.item.call_id
           );
           
-          // Store the mapping from OpenAI call_id to Claude tool_use_id
+          // Store the mapping from call_id to tool_use_id
           if (ev.item.call_id) {
             this.callIdMapping.set(ev.item.call_id, ev.item.id);
-            console.log(`[StreamState] Stored call_id mapping: ${ev.item.call_id} -> ${ev.item.id}`);
+            console.log(`[StreamState] Stored mapping: call_id ${ev.item.call_id} -> tool_use_id ${ev.item.id}`);
           }
           
           if (!toolMeta.started) {

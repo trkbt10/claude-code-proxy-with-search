@@ -57,33 +57,54 @@ export function convertClaudeImageToOpenAI(
 export function convertToolResult(
   block: ClaudeContentBlockToolResult,
   callIdMapping?: Map<string, string>
-): OpenAIResponseFunctionToolCallOutputItem {
+): any {
   console.log(
     `[DEBUG] Converting tool_result: tool_use_id="${
       block.tool_use_id
     }", content=${JSON.stringify(block.content)}`
   );
 
-  // Check if we have a mapped call_id for this tool_use_id
-  let call_id = block.tool_use_id;
+  // Log the current mapping state
   if (callIdMapping) {
-    // Look for a call_id that maps to this tool_use_id
-    for (const [openaiCallId, claudeToolId] of callIdMapping.entries()) {
-      if (claudeToolId === block.tool_use_id) {
-        call_id = openaiCallId;
-        console.log(
-          `[DEBUG] Found call_id mapping: ${block.tool_use_id} -> ${call_id}`
-        );
+    console.log(
+      `[DEBUG] Current call_id mappings (${callIdMapping.size} entries):`,
+      Array.from(callIdMapping.entries())
+    );
+  } else {
+    console.log("[DEBUG] No call_id mapping provided");
+  }
+
+  // Find the call_id for this tool_use_id
+  let call_id: string | undefined;
+  if (callIdMapping) {
+    for (const [cid, tid] of callIdMapping.entries()) {
+      if (tid === block.tool_use_id) {
+        call_id = cid;
         break;
       }
     }
   }
+  
+  if (!call_id) {
+    console.error(
+      `[ERROR] No call_id mapping found for tool_use_id: ${block.tool_use_id}`
+    );
+    // Don't throw error, just use the tool_use_id as fallback
+    // This might happen in the first request when mapping isn't established yet
+    console.warn(
+      `[WARN] Using tool_use_id as fallback call_id: ${block.tool_use_id}`
+    );
+    call_id = block.tool_use_id;
+  } else {
+    console.log(
+      `[DEBUG] Found call_id ${call_id} for tool_use_id ${block.tool_use_id}`
+    );
+  }
 
+  // Return only call_id and output as per test findings
   return {
-    id: block.tool_use_id,
-    call_id: call_id, // Use the mapped call_id if available
-    type: "function_call_output" as const,
-    status: "completed",
+    type: "function_call_output",
+    call_id: call_id,
     output:
       typeof block.content === "string"
         ? block.content
@@ -136,10 +157,43 @@ export function convertClaudeMessage(
           }", input=${JSON.stringify(block.input)}`
         );
         flushBuffer();
-        const toolCall: OpenAIResponseFunctionToolCall = {
+        
+        // Log the current mapping state
+        if (callIdMapping) {
+          console.log(
+            `[DEBUG] Current call_id mappings for tool_use (${callIdMapping.size} entries):`,
+            Array.from(callIdMapping.entries())
+          );
+        }
+
+        // Find the call_id for this tool_use_id
+        let callId: string | undefined;
+        if (callIdMapping) {
+          for (const [cid, tid] of callIdMapping.entries()) {
+            if (tid === block.id) {
+              callId = cid;
+              break;
+            }
+          }
+        }
+        
+        if (!callId) {
+          console.warn(
+            `[WARN] No call_id mapping found for tool_use_id: ${block.id}, using id as fallback`
+          );
+          // Use the tool_use_id as fallback - this happens when converting assistant messages
+          // that haven't been through OpenAI yet
+          callId = block.id;
+        } else {
+          console.log(
+            `[DEBUG] Found call_id ${callId} for tool_use_id ${block.id}`
+          );
+        }
+        
+        // For function_call, we only need call_id, name, and arguments
+        const toolCall: any = {
           type: "function_call",
-          id: block.id,
-          call_id: block.id, // This call_id must match in tool results
+          call_id: callId,
           name: block.name,
           arguments: JSON.stringify(block.input),
         };
@@ -187,29 +241,31 @@ export function convertClaudeMessage(
         content: buffer[0].text,
       });
     } else {
-      const content: OpenAIResponseInputMessageContentList = buffer.map((b) => {
-        switch (b.type) {
-          case "text":
-            if (message.role === "assistant") {
-              const outputTextItem: OpenAIResponseOutputText = {
-                type: "output_text",
-                text: b.text,
-              };
-              return outputTextItem;
-            } else {
+      // For assistant messages, we just push them as simple text
+      if (message.role === "assistant") {
+        const textContent = buffer.map(b => b.text).join("");
+        result.push({
+          role: message.role,
+          content: textContent,
+        });
+      } else {
+        // For user messages, we use the content array format
+        const content: OpenAIResponseInputMessageContentList = buffer.map((b) => {
+          switch (b.type) {
+            case "text":
               const inputTextItem: OpenAIResponseInputText = {
                 type: "input_text",
                 text: b.text,
               };
               return inputTextItem;
-            }
-        }
-      });
+          }
+        });
 
-      result.push({
-        role: message.role,
-        content,
-      });
+        result.push({
+          role: message.role,
+          content,
+        });
+      }
     }
     buffer = [];
   }

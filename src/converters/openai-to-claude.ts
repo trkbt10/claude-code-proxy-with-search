@@ -23,17 +23,28 @@ export function convertOpenAIResponseToClaude(
         }
       }
     } else if (output.type === "function_call" && output.id) {
+      console.log(`[OpenAI->Claude] function_call output:`, {
+        id: output.id,
+        call_id: 'call_id' in output ? output.call_id : undefined,
+        name: output.name,
+        type: output.type
+      });
+      
+      // Use the id as the tool_use_id for Claude
+      const toolUseId = output.id;
+      
       toolUseBlocks.push({
         type: "tool_use",
-        id: output.id,
+        id: toolUseId,
         name: output.name,
         input: JSON.parse(output.arguments || "{}"),
       });
       
-      // Store the mapping if OpenAI provided a different call_id
-      if ('call_id' in output && output.call_id && output.call_id !== output.id) {
-        callIdMapping.set(output.call_id, output.id);
-        console.log(`[OpenAI->Claude] Mapping call_id: ${output.call_id} -> ${output.id}`);
+      // Store the mapping: from call_id to tool_use_id
+      // This is what we'll need when converting back
+      if ('call_id' in output && output.call_id) {
+        callIdMapping.set(output.call_id, toolUseId);
+        console.log(`[OpenAI->Claude] Storing mapping: call_id ${output.call_id} -> tool_use_id ${toolUseId}`);
       }
     }
   }

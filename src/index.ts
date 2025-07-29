@@ -87,14 +87,22 @@ app.post("/v1/messages", async (c) => {
     c.req.header("x-session-id") ||
     requestId; // Use request ID as fallback
 
+  // Get conversation context
+  const context = conversationStore.getOrCreate(conversationId);
+
   // Log the incoming Claude request to understand the flow
   console.log(
     `[Request ${requestId}] Incoming Claude Request (conversation: ${conversationId}):`,
     JSON.stringify(claudeReq, null, 2)
   );
-
-  // Get conversation context
-  const context = conversationStore.getOrCreate(conversationId);
+  
+  // Log existing call_id mapping from context
+  if (context.callIdMapping && context.callIdMapping.size > 0) {
+    console.log(
+      `[Request ${requestId}] Existing call_id mappings from context:`,
+      Array.from(context.callIdMapping.entries())
+    );
+  }
 
   // Pass previous response ID and call_id mapping to the converter
   const openaiReq = claudeToResponses(claudeReq, context.lastResponseId, context.callIdMapping);

@@ -29,6 +29,7 @@
     "@anthropic-ai/sdk": "^0.56.0",
     "@types/node": "^24.0.10",
     "@types/uuid": "^10.0.0",
+    "bun-types": "^1.2.19",
     "tsx": "^4.20.3",
     "typescript": "^5.7.2"
   },
