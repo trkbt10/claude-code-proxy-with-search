@@ -1,0 +1,164 @@
+import type {
+  TextBlock as ClaudeTextBlock,
+  ImageBlockParam as ClaudeContentBlockImage,
+  ToolResultBlockParam as ClaudeContentBlockToolResult,
+  MessageParam as ClaudeMessageParam,
+} from "@anthropic-ai/sdk/resources/messages";
+import type {
+  ResponseFunctionToolCall as OpenAIResponseFunctionToolCall,
+  ResponseFunctionToolCallOutputItem as OpenAIResponseFunctionToolCallOutputItem,
+  ResponseInputText as OpenAIResponseInputText,
+  ResponseInputMessageContentList as OpenAIResponseInputMessageContentList,
+  ResponseInputItem as OpenAIResponseInputItem,
+  EasyInputMessage as OpenAIResponseEasyInputMessage,
+} from "openai/resources/responses/responses";
+import type { ImageURLContentBlock as OpenAIResponseImageURLContentBlock } from "openai/resources/beta/threads";
+
+function isBase64ImageSource(source: any): source is { type: 'base64'; data: string; media_type: string } {
+  return source && source.type === 'base64' && 'data' in source && 'media_type' in source;
+}
+
+function isURLImageSource(source: any): source is { type: 'url'; url: string } {
+  return source && source.type === 'url' && 'url' in source;
+}
+
+export function convertClaudeImageToOpenAI(
+  block: ClaudeContentBlockImage
+): OpenAIResponseImageURLContentBlock {
+  const src = block.source;
+  
+  if (isBase64ImageSource(src)) {
+    return {
+      type: "image_url" as const,
+      image_url: {
+        url: `data:${src.media_type};base64,${src.data}`,
+      },
+    };
+  }
+  
+  if (isURLImageSource(src)) {
+    return {
+      type: "image_url" as const,
+      image_url: {
+        url: src.url,
+      },
+    };
+  }
+  
+  throw new Error("Unsupported image source");
+}
+
+export function convertToolResult(
+  block: ClaudeContentBlockToolResult
+): OpenAIResponseFunctionToolCallOutputItem {
+  console.log(
+    `[DEBUG] Converting tool_result: tool_use_id="${
+      block.tool_use_id
+    }", content=${JSON.stringify(block.content)}`
+  );
+
+  // For tool results, we need to ensure the call_id matches what OpenAI expects
+  // The tool_use_id from Claude should match the call_id from the previous tool call
+  return {
+    id: block.tool_use_id,
+    call_id: block.tool_use_id, // This must match the call_id from the tool call
+    type: "function_call_output" as const,
+    status: "completed",
+    output:
+      typeof block.content === "string"
+        ? block.content
+        : JSON.stringify(block.content),
+  };
+}
+
+export function convertClaudeMessage(
+  message: ClaudeMessageParam
+): OpenAIResponseInputItem[] {
+  console.log(
+    `[DEBUG] Converting Claude message: role=${message.role}, content type=${typeof message.content}`
+  );
+  
+  if (typeof message.content === "string") {
+    const inputMessage: OpenAIResponseEasyInputMessage = {
+      role: message.role,
+      content: message.content,
+    };
+    return [inputMessage];
+  }
+
+  const result: OpenAIResponseInputItem[] = [];
+  let buffer: ClaudeTextBlock[] = [];
+
+  for (const block of message.content) {
+    switch (block.type) {
+      case "text":
+        const text: ClaudeTextBlock = {
+          type: "text",
+          text: block.text,
+          citations: [],
+        };
+        buffer.push(text);
+        break;
+
+      case "tool_use":
+        console.log(
+          `[DEBUG] Converting tool_use: id="${block.id}", name="${
+            block.name
+          }", input=${JSON.stringify(block.input)}`
+        );
+        flushBuffer();
+        const toolCall: OpenAIResponseFunctionToolCall = {
+          type: "function_call",
+          id: block.id,
+          call_id: block.id, // This call_id must match in tool results
+          name: block.name,
+          arguments: JSON.stringify(block.input),
+        };
+        result.push(toolCall);
+        console.log(
+          `[DEBUG] Created function_call with call_id="${toolCall.call_id}"`
+        );
+        break;
+
+      case "tool_result":
+        flushBuffer();
+        const toolResult = convertToolResult(block);
+        result.push(toolResult);
+        
+        // Validate that we have a corresponding tool call
+        console.log(
+          `[DEBUG] Added tool_result for call_id="${toolResult.call_id}"`
+        );
+        break;
+    }
+  }
+  flushBuffer();
+  return result;
+
+  function flushBuffer() {
+    if (buffer.length === 0) return;
+    if (buffer.length === 1 && "text" in buffer[0]) {
+      result.push({
+        role: message.role,
+        content: buffer[0].text,
+      });
+    } else {
+      const content: OpenAIResponseInputMessageContentList = buffer.map((b) => {
+        switch (b.type) {
+          case "text":
+            const textItem: OpenAIResponseInputText = {
+              type: "input_text",
+              text: b.text,
+            };
+            return textItem;
+        }
+      });
+
+      result.push({
+        role: message.role,
+        content,
+      });
+    }
+    buffer = [];
+  }
+}
