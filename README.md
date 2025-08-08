@@ -1,5 +1,7 @@
 # Claude to OpenAI Responses API Proxy
 
-**こちらのプロジェクトはまだ正常に動作しません。**
+```bash
+$ bun run ./src/server.ts
+$ ANTHROPIC_BASE_URL="http://localhost:8082" ANTHROPIC_AUTH_TOKEN="some-api-key" claude
 
-Claude Code の通信(Anthropic SSE)と OpenAI のストリーム通信をプロキシし、Claude Code から OpenAI の Responses API を利用できるようにするための試験的プロジェクト。
+```
