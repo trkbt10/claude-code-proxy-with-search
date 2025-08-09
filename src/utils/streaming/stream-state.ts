@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { ClaudeSSEWriter } from "./claude-sse-writer";
 import { EventLogger } from "../logging/logger";
 import { ContentBlockManager } from "./content-block-manager";
+import { logUnexpected, logDebug } from "../logging/migrate-logger";
+import { getMetadataHandler } from "./metadata-handler";
+import { getToolChainValidator } from "../validation/tool-chain-validator";
 import type {
   ResponseStreamEvent as OpenAIResponseStreamEvent,
   ResponseOutputItemAddedEvent as OpenAIResponseOutputItemAddedEvent,
@@ -25,13 +28,18 @@ export class StreamState {
   private streamCompleted = false;
   private currentTextBlockId?: string;
   private callIdMapping: Map<string, string> = new Map(); // Maps OpenAI call_id to Claude tool_use_id
+  private requestId?: string;
+  private metadataHandler = getMetadataHandler(this.requestId || "unknown");
+  private toolValidator = getToolChainValidator(this.requestId || "unknown");
 
   constructor(
     private sse: ClaudeSSEWriter,
-    logEnabled: boolean = process.env.LOG_EVENTS === "true"
+    logEnabled: boolean = process.env.LOG_EVENTS === "true",
+    requestId?: string
   ) {
     this.messageId = randomUUID();
     this.logger = new EventLogger(process.env.LOG_DIR || "./logs", logEnabled);
+    this.requestId = requestId;
   }
 
   async greeting() {
@@ -115,6 +123,13 @@ export class StreamState {
             type: ev.item.type
           });
           
+          // Record tool call for validation
+          this.toolValidator.recordToolCall({
+            id: ev.item.id,
+            call_id: ev.item.call_id,
+            name: ev.item.name,
+          });
+          
           const { block: toolBlock, metadata: toolMeta } = this.contentManager.addToolBlock(
             ev.item.id,
             ev.item.name,
@@ -126,6 +141,9 @@ export class StreamState {
             this.callIdMapping.set(ev.item.call_id, ev.item.id);
             console.log(`[StreamState] Stored mapping: call_id ${ev.item.call_id} -> tool_use_id ${ev.item.id}`);
           }
+          
+          // Validate the mapping
+          this.toolValidator.validateMapping(this.callIdMapping);
           
           if (!toolMeta.started) {
             await this.sse.toolStart(toolMeta.index, {
@@ -169,6 +187,24 @@ export class StreamState {
           this.responseId = contentAddedEvent.item_id;
           console.log(`[StreamState] Captured response ID: ${this.responseId}`);
         }
+        
+        // Check if this might be metadata JSON (though usually empty at this stage)
+        if (contentAddedEvent.part.type === "output_text" && contentAddedEvent.part.text) {
+          const textContent = contentAddedEvent.part.text.trim();
+          if (textContent && this.metadataHandler.isMetadata(textContent)) {
+            const result = this.metadataHandler.processMetadata(
+              textContent,
+              contentAddedEvent.item_id
+            );
+            logDebug(
+              "Detected metadata JSON in content_part.added",
+              { metadata: result.metadata, item_id: contentAddedEvent.item_id },
+              { requestId: this.requestId }
+            );
+            // Continue to process and forward the metadata
+          }
+        }
+        
         const { block: newTextBlock, metadata: newTextMeta } = this.contentManager.addTextBlock();
         this.currentTextBlockId = newTextMeta.id;
         await this.sse.textStart(newTextMeta.index);
@@ -191,6 +227,28 @@ export class StreamState {
             `item_id=${contentDoneEvent.item_id}, content_index=${contentDoneEvent.content_index}`
         );
         console.log(contentDoneEvent);
+        
+        // Check if the text is metadata - but still forward it to Claude
+        if (contentDoneEvent.part.type === "output_text" && contentDoneEvent.part.text) {
+          const textContent = contentDoneEvent.part.text.trim();
+          if (this.metadataHandler.isMetadata(textContent)) {
+            const result = this.metadataHandler.processMetadata(
+              textContent,
+              contentDoneEvent.item_id
+            );
+            
+            // Log that we detected metadata but will forward it
+            logDebug(
+              "Forwarding conversation metadata to Claude",
+              { metadata: result.metadata, item_id: contentDoneEvent.item_id },
+              { requestId: this.requestId }
+            );
+            
+            // Continue to forward the metadata to Claude as-is
+            // Claude will handle it appropriately
+          }
+        }
+        
         const textBlockResult = this.currentTextBlockId
           ? this.contentManager.getBlock(this.currentTextBlockId)
           : this.contentManager.getCurrentTextBlock();
@@ -267,50 +325,61 @@ export class StreamState {
         this.sse.ping();
         break;
 
-      case "response.web_search_call.in_progress":
+      case "response.web_search_call.in_progress": {
+        // Represent web search progress using a dedicated web_search_tool_result block
         const webSearchInProgress = ev as ResponseWebSearchCallInProgressEvent;
-        // Web検索開始をツールブロックとして送信
-        const { block: webSearchBlock, metadata: webSearchMeta } = this.contentManager.addToolBlock(
+        const { block, metadata } = this.contentManager.addWebSearchToolResultBlock(
           webSearchInProgress.item_id,
-          "web_search"
+          webSearchInProgress.item_id
         );
-        if (!webSearchMeta.started) {
-          await this.sse.toolStart(webSearchMeta.index, {
-            id: webSearchInProgress.item_id,
-            name: "web_search",
-            input: { status: "in_progress" },
-          });
-          this.contentManager.markStarted(webSearchMeta.id);
+        if (!metadata.started) {
+          await this.sse.webSearchResultStart(metadata.index, webSearchInProgress.item_id);
+          this.contentManager.markStarted(metadata.id);
         }
+        logDebug(
+          "web_search_call.in_progress received",
+          { item_id: webSearchInProgress.item_id },
+          { requestId: this.requestId }
+        );
         break;
+      }
 
-      case "response.web_search_call.searching":
+      case "response.web_search_call.searching": {
         const webSearchSearching = ev as ResponseWebSearchCallSearchingEvent;
-        const searchBlockResult = this.contentManager.getToolBlock(
+        const resultBlock = this.contentManager.getWebSearchToolResultBlock(
           webSearchSearching.item_id
         );
-        if (searchBlockResult && !searchBlockResult.metadata.completed) {
-          // 検索中の状態をツール引数のデルタとして送信
+        if (resultBlock && !resultBlock.metadata.completed) {
           const searchingData = JSON.stringify({
             status: "searching",
             sequence: webSearchSearching.sequence_number,
           });
-          searchBlockResult.metadata.argsBuffer = (searchBlockResult.metadata.argsBuffer || "") + searchingData;
-          await this.sse.toolArgsDelta(searchBlockResult.metadata.index, searchingData);
+          await this.sse.webSearchResultDelta(resultBlock.metadata.index, searchingData);
         }
+        logDebug(
+          "web_search_call.searching received",
+          { item_id: webSearchSearching.item_id, seq: webSearchSearching.sequence_number },
+          { requestId: this.requestId }
+        );
         break;
+      }
 
-      case "response.web_search_call.completed":
+      case "response.web_search_call.completed": {
         const webSearchCompleted = ev as ResponseWebSearchCallCompletedEvent;
-        const completedBlockResult = this.contentManager.getToolBlock(
+        const resultBlock = this.contentManager.getWebSearchToolResultBlock(
           webSearchCompleted.item_id
         );
-        if (completedBlockResult && !completedBlockResult.metadata.completed) {
-          // Web検索完了をツールブロックの終了として送信
-          await this.sse.toolStop(completedBlockResult.metadata.index);
-          this.contentManager.markCompleted(completedBlockResult.metadata.id);
+        if (resultBlock && !resultBlock.metadata.completed) {
+          await this.sse.webSearchResultStop(resultBlock.metadata.index);
+          this.contentManager.markCompleted(resultBlock.metadata.id);
         }
+        logDebug(
+          "web_search_call.completed received",
+          { item_id: webSearchCompleted.item_id },
+          { requestId: this.requestId }
+        );
         break;
+      }
 
       default:
         console.warn("Unknown event type:", ev.type);

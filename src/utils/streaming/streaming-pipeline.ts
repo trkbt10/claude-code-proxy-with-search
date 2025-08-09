@@ -36,7 +36,7 @@ export class StreamingPipeline {
     private config: StreamingPipelineConfig
   ) {
     this.sse = new ClaudeSSEWriter(stream);
-    this.state = new StreamState(this.sse, config.logEnabled);
+    this.state = new StreamState(this.sse, config.logEnabled, config.requestId);
   }
 
   /**

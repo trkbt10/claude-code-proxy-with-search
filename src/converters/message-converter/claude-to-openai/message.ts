@@ -11,14 +11,33 @@ import type {
 } from "openai/resources/responses/responses";
 import { convertClaudeImageToOpenAI } from "./image";
 import { convertToolResult } from "./tool";
+import { getToolChainValidator } from "../../../utils/validation/tool-chain-validator";
+import { logDebug } from "../../../utils/logging/migrate-logger";
+import { CallIdManager } from "../../../utils/mapping/call-id-manager";
 
 /**
  * Convert Claude message to OpenAI input items
  */
 export function convertClaudeMessage(
   message: ClaudeMessageParam,
-  callIdMapping?: Map<string, string>
+  callIdManager?: CallIdManager | Map<string, string>
 ): OpenAIResponseInputItem[] {
+  // Ensure we have a CallIdManager instance
+  let manager: CallIdManager;
+  if (!callIdManager) {
+    manager = new CallIdManager();
+  } else if (callIdManager instanceof CallIdManager) {
+    manager = callIdManager;
+  } else if (callIdManager instanceof Map) {
+    // Convert legacy Map to CallIdManager
+    manager = new CallIdManager();
+    manager.importFromMap(callIdManager, { source: "legacy-map-conversion" });
+  } else {
+    manager = new CallIdManager();
+  }
+  
+  // Use manager throughout the function
+  const actualManager = manager;
   console.log(
     `[DEBUG] Converting Claude message: role=${
       message.role
@@ -62,34 +81,26 @@ export function convertClaudeMessage(
         flushBuffer();
 
         // Log the current mapping state
-        if (callIdMapping) {
-          console.log(
-            `[DEBUG] Current call_id mappings for tool_use (${callIdMapping.size} entries):`,
-            Array.from(callIdMapping.entries())
-          );
-        }
+        const stats = actualManager.getStats();
+        console.log(
+          `[DEBUG] Current call_id mappings stats:`,
+          stats
+        );
 
         // Find the call_id for this tool_use_id
-        let callId: string | undefined;
-        if (callIdMapping) {
-          for (const [cid, tid] of callIdMapping.entries()) {
-            if (tid === block.id) {
-              callId = cid;
-              break;
-            }
-          }
-        }
-
+        let callId = actualManager.getOpenAICallId(block.id);
+        
         if (!callId) {
-          console.warn(
-            `[WARN] No call_id mapping found for tool_use_id: ${block.id}, using id as fallback`
+          // Generate a new OpenAI-style call_id for this tool use
+          // This happens when Claude initiates a tool call that hasn't been through OpenAI yet
+          callId = `call_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+          actualManager.registerMapping(callId, block.id, block.name, { source: "message-conversion-new" });
+          console.log(
+            `[DEBUG] Generated new OpenAI call_id: ${callId} -> ${block.id}`
           );
-          // Use the tool_use_id as fallback - this happens when converting assistant messages
-          // that haven't been through OpenAI yet
-          callId = block.id;
         } else {
           console.log(
-            `[DEBUG] Found call_id ${callId} for tool_use_id ${block.id}`
+            `[DEBUG] Found existing call_id ${callId} for tool_use_id ${block.id}`
           );
         }
 
@@ -108,12 +119,19 @@ export function convertClaudeMessage(
 
       case "tool_result":
         flushBuffer();
-        const toolResult = convertToolResult(block, callIdMapping);
+        const toolResult = convertToolResult(block, actualManager);
         result.push(toolResult);
 
-        // Validate that we have a corresponding tool call
-        console.log(
-          `[DEBUG] Added tool_result for call_id="${toolResult.call_id}"`
+        // Validate tool result
+        const validator = getToolChainValidator("message-conversion");
+        validator.recordToolResult({
+          tool_use_id: block.tool_use_id,
+          content: block.content,
+        });
+        
+        logDebug(
+          `Added tool_result for call_id="${toolResult.call_id}"`,
+          { tool_use_id: block.tool_use_id, call_id: toolResult.call_id }
         );
         break;
 

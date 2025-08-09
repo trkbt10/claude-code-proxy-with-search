@@ -96,8 +96,8 @@ const buildOutputItems = (
   // Handle tool calls
   if (hasToolCalls(message)) {
     for (const toolCall of message.tool_calls) {
-      if (isFunctionToolCall(toolCall)) {
-        const functionCall = createFunctionCall(toolCall, callIdMapping);
+      const functionCall = createFunctionCall(toolCall, callIdMapping);
+      if (functionCall) {
         output.push(functionCall);
       }
     }
@@ -109,12 +109,19 @@ const buildOutputItems = (
 const createFunctionCall = (
   toolCall: ChatCompletionMessageToolCall,
   callIdMapping: Map<string, string>
-): ResponseFunctionToolCall => {
+): ResponseFunctionToolCall | null => {
+  // Check if this is a function tool call
+  if (!isFunctionToolCall(toolCall)) {
+    console.warn(`[WARN] Skipping non-function tool call: type=${toolCall.type}`);
+    return null;
+  }
+  
   const toolUseId = generateId("toolu");
   
   // Store the mapping for future reference
   callIdMapping.set(toolCall.id, toolUseId);
   
+  // Now TypeScript knows toolCall has function property
   return {
     type: "function_call",
     id: toolUseId,

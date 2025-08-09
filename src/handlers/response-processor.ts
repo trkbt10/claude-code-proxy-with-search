@@ -10,6 +10,8 @@ import { streamingPipelineFactory } from "../utils/streaming/streaming-pipeline"
 import { convertOpenAIResponseToClaude } from "../converters/message-converter/openai-to-claude/response";
 import { conversationStore } from "../utils/conversation/conversation-store";
 import { claudeToResponses } from "../converters/message-converter/claude-to-openai/request";
+import { logError, logInfo, logDebug, logUnexpected, logRequestResponse, logPerformance } from "../utils/logging/migrate-logger";
+import { callIdRegistry } from "../utils/mapping/call-id-manager";
 
 export type ProcessorConfig = {
   requestId: string;
@@ -18,6 +20,7 @@ export type ProcessorConfig = {
   claudeReq: ClaudeMessageCreateParams;
   modelResolver: (model: any) => string;
   stream: boolean;
+  signal?: AbortSignal; // Support for request cancellation
 };
 
 export type ProcessorResult = {
@@ -25,26 +28,52 @@ export type ProcessorResult = {
   callIdMapping?: Map<string, string>;
 };
 
-function handleError(requestId: string, openaiReq: ResponseCreateParams, error: unknown): void {
-  console.error(`[Request ${requestId}] Error:`, error);
-
+function handleError(
+  requestId: string, 
+  openaiReq: ResponseCreateParams, 
+  error: unknown,
+  conversationId?: string
+): void {
+  const context = { requestId, endpoint: "responses.create" };
+  
   if (
     error instanceof Error &&
     "status" in error &&
     (error as any).status === 400 &&
     error.message?.includes("No tool output found")
   ) {
-    console.error(
-      `[Request ${requestId}] Tool result error - the conversation history might be incomplete`
+    // Generate debug report for tool output errors
+    let debugReport = "";
+    if (conversationId) {
+      const manager = callIdRegistry.getManager(conversationId);
+      debugReport = manager.generateDebugReport();
+      
+      // Save debug report to file
+      const fs = require("fs");
+      const path = require("path");
+      const debugDir = path.join(process.cwd(), "logs", "debug");
+      if (!fs.existsSync(debugDir)) {
+        fs.mkdirSync(debugDir, { recursive: true });
+      }
+      const filename = `callid-debug-${conversationId}-${Date.now()}.txt`;
+      fs.writeFileSync(path.join(debugDir, filename), debugReport);
+      
+      console.error(`[ERROR] Debug report saved to: logs/debug/${filename}`);
+    }
+    
+    logUnexpected(
+      "Tool output should be found in conversation history",
+      "No tool output found error",
+      {
+        tools: openaiReq.tools?.length,
+        input: openaiReq.input,
+        errorMessage: error.message,
+        debugReportSaved: !!debugReport,
+      },
+      context
     );
-    console.error(
-      `[Request ${requestId}] Request details:`,
-      JSON.stringify(
-        { tools: openaiReq.tools?.length, input: openaiReq.input },
-        null,
-        2
-      )
-    );
+  } else {
+    logError("Request processing error", error, context);
   }
 }
 
@@ -53,25 +82,44 @@ async function processNonStreamingResponse(
   openaiReq: ResponseCreateParams,
   c: Context
 ): Promise<Response> {
+  const startTime = Date.now();
+  const context = { 
+    requestId: config.requestId, 
+    conversationId: config.conversationId,
+    stream: false 
+  };
+  
   try {
+    logDebug("Starting non-streaming response", { openaiReq }, context);
+    
+    // Pass the abort signal to OpenAI API
     const response = await config.openai.responses.create({
       ...openaiReq,
       stream: false,
-    });
+    }, config.signal ? { signal: config.signal } : undefined);
 
+    // Get the manager for this conversation
+    const manager = callIdRegistry.getManager(config.conversationId);
+    
     const { message: claudeResponse, callIdMapping } =
-      convertOpenAIResponseToClaude(response);
+      convertOpenAIResponseToClaude(response, manager);
+
+    // The manager already has the mappings registered inside convertOpenAIResponseToClaude
 
     conversationStore.updateConversationState({
       conversationId: config.conversationId,
       requestId: config.requestId,
       responseId: response.id,
-      callIdMapping,
+      callIdMapping: manager.getMappingAsMap(),
     });
+
+    const duration = Date.now() - startTime;
+    logRequestResponse(openaiReq, response, duration, context);
+    logPerformance("non-streaming-response", duration, { responseId: response.id }, context);
 
     return c.json(claudeResponse);
   } catch (error) {
-    handleError(config.requestId, openaiReq, error);
+    handleError(config.requestId, openaiReq, error, config.conversationId);
     throw error;
   }
 }
@@ -87,57 +135,74 @@ async function processStreamingResponse(
       logEnabled: process.env.LOG_EVENTS === "true",
     });
 
-    console.log(
-      `[Request ${config.requestId}] OpenAI Request Params:\n`,
-      JSON.stringify(openaiReq, null, 2)
-    );
+    const context = { 
+      requestId: config.requestId, 
+      conversationId: config.conversationId,
+      stream: true 
+    };
+    logDebug("OpenAI Request Params", openaiReq, context);
 
     try {
+      // Pass the abort signal to OpenAI API for streaming
       const openaiStream = await config.openai.responses
         .create({
           ...openaiReq,
           stream: true,
-        })
+        }, config.signal ? { signal: config.signal } : undefined)
         .catch(async (error) => {
-          handleError(config.requestId, openaiReq, error);
+          // Check if error is due to abort
+          if (config.signal?.aborted || error.name === 'AbortError') {
+            logInfo("Request was aborted by client", undefined, context);
+            await pipeline.cleanup();
+            throw new Error('Request cancelled by client');
+          }
+          handleError(config.requestId, openaiReq, error, config.conversationId);
           throw error;
         });
 
       await pipeline.start();
 
       for await (const event of openaiStream) {
+        // Check for abort signal
+        if (config.signal?.aborted) {
+          logInfo("Request aborted during streaming", undefined, context);
+          await pipeline.cleanup();
+          break;
+        }
+
         await pipeline.processEvent(event);
 
         if (pipeline.isCompleted()) {
-          console.log(
-            `✅ [Request ${config.requestId}] response.completed → breaking loop`
-          );
+          logInfo("Response completed, breaking loop", undefined, context);
           break;
         }
         if (pipeline.isClientClosed()) {
-          console.log(
-            `🚪 [Request ${config.requestId}] client closed connection`
-          );
+          logInfo("Client closed connection", undefined, context);
           break;
         }
       }
 
-      console.log(
-        `▶️ [Request ${config.requestId}] loop exited`
-      );
+      logDebug("Stream processing loop exited", undefined, context);
 
       const result = pipeline.getResult();
+      
+      // Register mappings in centralized manager
+      const manager = callIdRegistry.getManager(config.conversationId);
+      if (result.callIdMapping) {
+        manager.importFromMap(result.callIdMapping, { source: "streaming-response" });
+      }
+      
       conversationStore.updateConversationState({
         conversationId: config.conversationId,
         requestId: config.requestId,
         responseId: result.responseId,
-        callIdMapping: result.callIdMapping,
+        callIdMapping: manager.getMappingAsMap(),
       });
     } catch (err) {
       await pipeline.handleError(err);
     } finally {
       streamingPipelineFactory.release(config.requestId);
-      console.log(`[Request ${config.requestId}] Cleanup complete`);
+      logDebug("Cleanup complete", undefined, context);
     }
   });
 }
@@ -146,11 +211,16 @@ export const createResponseProcessor = (config: ProcessorConfig) => {
   // Get conversation context
   const context = conversationStore.getConversationContext(config.conversationId);
 
-  // Log existing call_id mapping from context
+  // Get or create centralized manager for this conversation
+  const manager = callIdRegistry.getManager(config.conversationId);
+  
+  // Import existing mappings if available
   if (context.callIdMapping && context.callIdMapping.size > 0) {
-    console.log(
-      `[Request ${config.requestId}] Existing call_id mappings from context:`,
-      Array.from(context.callIdMapping.entries())
+    manager.importFromMap(context.callIdMapping, { source: "conversation-context" });
+    logDebug(
+      "Imported existing call_id mappings to manager",
+      { count: context.callIdMapping.size, stats: manager.getStats() },
+      { requestId: config.requestId, conversationId: config.conversationId }
     );
   }
 
@@ -159,12 +229,14 @@ export const createResponseProcessor = (config: ProcessorConfig) => {
     config.claudeReq,
     config.modelResolver,
     context.lastResponseId,
-    context.callIdMapping
+    manager
   );
 
   if (context.lastResponseId) {
-    console.log(
-      `[Request ${config.requestId}] Using previous_response_id: ${context.lastResponseId}`
+    logDebug(
+      "Using previous_response_id",
+      { previousResponseId: context.lastResponseId },
+      { requestId: config.requestId, conversationId: config.conversationId }
     );
   }
 

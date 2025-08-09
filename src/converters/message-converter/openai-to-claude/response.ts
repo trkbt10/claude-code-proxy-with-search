@@ -5,14 +5,17 @@ import type {
   ToolUseBlock,
   ContentBlock
 } from "@anthropic-ai/sdk/resources/messages";
+import { CallIdManager } from "../../../utils/mapping/call-id-manager";
 
 export function convertOpenAIResponseToClaude(
-  openaiResponse: OpenAIResponse
+  openaiResponse: OpenAIResponse,
+  existingManager?: CallIdManager
 ): { message: ClaudeMessage; callIdMapping: Map<string, string> } {
   // Collect all text content
   const textContent: string[] = [];
   const toolUseBlocks: ToolUseBlock[] = [];
-  const callIdMapping = new Map<string, string>(); // Maps OpenAI call_id to Claude tool_use_id
+  const manager = existingManager || new CallIdManager();
+  const callIdMapping = new Map<string, string>(); // For backward compatibility
 
   // Process output items
   for (const output of openaiResponse.output || []) {
@@ -30,8 +33,9 @@ export function convertOpenAIResponseToClaude(
         type: output.type
       });
       
-      // Use the id as the tool_use_id for Claude
-      const toolUseId = output.id;
+      // Generate a unique tool_use_id for Claude
+      // OpenAI uses output.id but we need to generate our own for Claude
+      const toolUseId = `toolu_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
       
       toolUseBlocks.push({
         type: "tool_use",
@@ -40,11 +44,24 @@ export function convertOpenAIResponseToClaude(
         input: JSON.parse(output.arguments || "{}"),
       });
       
-      // Store the mapping: from call_id to tool_use_id
-      // This is what we'll need when converting back
+      // Store the mapping: from OpenAI's call_id to Claude's tool_use_id
+      // The call_id is what will be referenced in future tool results
       if ('call_id' in output && output.call_id) {
-        callIdMapping.set(output.call_id, toolUseId);
-        console.log(`[OpenAI->Claude] Storing mapping: call_id ${output.call_id} -> tool_use_id ${toolUseId}`);
+        // Don't fix the prefix - keep OpenAI's original call_id format
+        const openaiCallId = output.call_id;
+        
+        // Register in the manager: OpenAI call_id -> Claude tool_use_id
+        manager.registerMapping(openaiCallId, toolUseId, output.name, { source: "openai-response" });
+        
+        // Also store in the legacy map for backward compatibility
+        callIdMapping.set(openaiCallId, toolUseId);
+        console.log(`[OpenAI->Claude] Storing mapping: call_id ${openaiCallId} -> tool_use_id ${toolUseId}`);
+      } else if (output.id) {
+        // Fallback to using output.id if call_id is not present
+        const openaiId = output.id;
+        manager.registerMapping(openaiId, toolUseId, output.name, { source: "openai-response-id" });
+        callIdMapping.set(openaiId, toolUseId);
+        console.log(`[OpenAI->Claude] Storing mapping (using id): ${openaiId} -> tool_use_id ${toolUseId}`);
       }
     }
   }

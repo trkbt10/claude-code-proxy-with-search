@@ -18,14 +18,27 @@ import {
   createTextEditorDefinition,
 } from "./tool-definitions";
 import { normalizeJSONSchemaForOpenAI } from "./schema-helpers";
+import { CallIdManager } from "../../../utils/mapping/call-id-manager";
 
 /**
  * Convert tool result from Claude format to OpenAI format
  */
 export function convertToolResult(
   block: ClaudeContentBlockToolResult,
-  callIdMapping?: Map<string, string>
+  callIdManager?: CallIdManager | Map<string, string>
 ): OpenAIResponseFunctionToolCallOutputItem {
+  // Ensure we have a CallIdManager instance
+  let manager: CallIdManager;
+  if (!callIdManager) {
+    manager = new CallIdManager();
+  } else if (callIdManager instanceof CallIdManager) {
+    manager = callIdManager;
+  } else if (callIdManager instanceof Map) {
+    manager = new CallIdManager();
+    manager.importFromMap(callIdManager, { source: "legacy-map-conversion" });
+  } else {
+    manager = new CallIdManager();
+  }
   console.log(
     `[DEBUG] Converting tool_result: tool_use_id="${
       block.tool_use_id
@@ -33,25 +46,11 @@ export function convertToolResult(
   );
 
   // Log the current mapping state
-  if (callIdMapping) {
-    console.log(
-      `[DEBUG] Current call_id mappings (${callIdMapping.size} entries):`,
-      Array.from(callIdMapping.entries())
-    );
-  } else {
-    console.log("[DEBUG] No call_id mapping provided");
-  }
+  const stats = manager.getStats();
+  console.log(`[DEBUG] Current call_id mappings stats:`, stats);
 
   // Find the call_id for this tool_use_id
-  let call_id: string | undefined;
-  if (callIdMapping) {
-    for (const [cid, tid] of callIdMapping.entries()) {
-      if (tid === block.tool_use_id) {
-        call_id = cid;
-        break;
-      }
-    }
-  }
+  let call_id = manager.getOpenAICallId(block.tool_use_id);
 
   if (!call_id) {
     console.error(
@@ -62,18 +61,26 @@ export function convertToolResult(
     console.warn(
       `[WARN] Using tool_use_id as fallback call_id: ${block.tool_use_id}`
     );
-    call_id = block.tool_use_id;
+    call_id = CallIdManager.fixIdPrefix(block.tool_use_id, "tool_result_fallback");
   } else {
     console.log(
       `[DEBUG] Found call_id ${call_id} for tool_use_id ${block.tool_use_id}`
     );
   }
 
+  // Don't fix the call_id if it already has a valid prefix
+  const finalCallId = CallIdManager.isValidPrefix(call_id) 
+    ? call_id 
+    : CallIdManager.fixIdPrefix(call_id, "tool_result_call_id");
+
+  // Generate a unique ID for this tool result (OpenAI format)
+  const resultId = `fc_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+
   // Return with id, type, call_id and output as per OpenAI ResponseFunctionToolCallOutputItem type
   return {
-    id: block.tool_use_id, // Use tool_use_id as the id
+    id: resultId, // Use a new unique ID for the result
     type: "function_call_output",
-    call_id: call_id,
+    call_id: finalCallId, // Use the call_id that maps to the original tool call
     output:
       typeof block.content === "string"
         ? block.content
@@ -149,8 +156,13 @@ export function convertClaudeToolToOpenAI(
   
   // Handle server-side tools with type guards to preserve specific information
   if (isWebSearchTool(t)) {
-    // Create definition with Claude-specific parameters
-    return createWebSearchDefinition(t);
+    // Do NOT expose a function tool named "web_search".
+    // The runtime doesn't implement executing it client-side, and offering it
+    // leads the model to call a non-existent tool and causes loops.
+    // Instead, rely on the built-in web_search_preview tool injected elsewhere
+    // (handled by the backend) or skip entirely.
+    console.warn("[WARN] Suppressing function tool definition for web_search");
+    return [];
   }
   
   if (isBashTool(t)) {

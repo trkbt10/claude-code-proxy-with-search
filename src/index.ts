@@ -5,6 +5,7 @@ import { countTokens } from "./handlers/token-counter";
 import { checkEnvironmentVariables } from "./config/environment";
 import { createResponseProcessor } from "./handlers/response-processor";
 
+// Bun automatically loads .env file, but we still check for required variables
 checkEnvironmentVariables();
 
 const openai = new OpenAI({
@@ -88,7 +89,47 @@ app.post("/v1/messages", async (c) => {
     JSON.stringify(claudeReq, null, 2)
   );
 
-  // Create and execute the appropriate processor
+  // Create an AbortController for this request
+  const abortController = new AbortController();
+  
+  // Optional: Set a timeout for the request (configurable via environment variable)
+  const timeoutMs = process.env.REQUEST_TIMEOUT_MS ? parseInt(process.env.REQUEST_TIMEOUT_MS) : 0;
+  let timeoutId: NodeJS.Timeout | undefined;
+  
+  if (timeoutMs > 0) {
+    timeoutId = setTimeout(() => {
+      console.log(`[Request ${requestId}] Request timeout after ${timeoutMs}ms`);
+      abortController.abort();
+    }, timeoutMs);
+  }
+  
+  // Set up client disconnect detection
+  // In Hono, we can detect if the client disconnects by checking the request's raw object
+  const req = c.req.raw;
+  
+  // Handle client disconnect (works in Node.js environments)
+  if ('on' in req && typeof req.on === 'function') {
+    (req as any).on('close', () => {
+      if (!(req as any).complete) {
+        console.log(`[Request ${requestId}] Client disconnected, aborting OpenAI request`);
+        abortController.abort();
+        if (timeoutId) clearTimeout(timeoutId);
+      }
+    });
+  }
+  
+  // For environments where the request doesn't have event emitters,
+  // we can also check the abort signal from the request itself if available
+  const requestSignal = (req as any).signal;
+  if (requestSignal && requestSignal instanceof AbortSignal) {
+    requestSignal.addEventListener('abort', () => {
+      console.log(`[Request ${requestId}] Request aborted by client`);
+      abortController.abort();
+      if (timeoutId) clearTimeout(timeoutId);
+    });
+  }
+
+  // Create and execute the appropriate processor with abort signal
   const processor = createResponseProcessor({
     requestId,
     conversationId,
@@ -98,9 +139,25 @@ app.post("/v1/messages", async (c) => {
       return process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
     },
     stream,
+    signal: abortController.signal, // Pass the abort signal
   });
 
-  return processor.process(c);
+  try {
+    const response = await processor.process(c);
+    // Clear timeout if request completes successfully
+    if (timeoutId) clearTimeout(timeoutId);
+    return response;
+  } catch (error: any) {
+    // Clear timeout on error
+    if (timeoutId) clearTimeout(timeoutId);
+    
+    // Handle aborted requests gracefully
+    if (error.message === 'Request cancelled by client' || abortController.signal.aborted) {
+      console.log(`[Request ${requestId}] Request was cancelled`);
+      return c.text('Request cancelled', 499); // 499 Client Closed Request
+    }
+    throw error;
+  }
 });
 
 // トークンカウントエンドポイント

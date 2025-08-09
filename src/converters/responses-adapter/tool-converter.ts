@@ -41,9 +41,10 @@ export const convertToolsForChat = (tools: Tool[]): ChatCompletionTool[] => {
 
 /**
  * Converts Responses API tool choice to Chat Completion tool choice
+ * Accepts any tool choice type and converts to chat-compatible format
  */
 export const convertToolChoiceForChat = (
-  toolChoice: ToolChoiceOptions | ToolChoiceTypes | ToolChoiceFunction
+  toolChoice: any
 ): ChatCompletionToolChoiceOption => {
   // Handle string types
   if (typeof toolChoice === "string") {

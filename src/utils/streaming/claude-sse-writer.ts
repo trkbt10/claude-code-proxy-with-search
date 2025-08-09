@@ -106,6 +106,43 @@ export class ClaudeSSEWriter extends SSEWriter {
     await this.writeClaudeEvent(event);
   }
 
+  // Web search tool result helpers
+  async webSearchResultStart(index: number, toolUseId?: string) {
+    const event: RawContentBlockStartEvent = {
+      type: "content_block_start",
+      index,
+      content_block: {
+        // This is a Claude-specific block used by the UI to render search results
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore - not in upstream SDK types
+        type: "web_search_tool_result",
+        // @ts-ignore
+        tool_use_id: toolUseId ?? "",
+        // @ts-ignore
+        content: [],
+      },
+    };
+    await this.writeClaudeEvent(event);
+  }
+
+  async webSearchResultDelta(index: number, partialJson: string) {
+    const event: RawContentBlockDeltaEvent = {
+      type: "content_block_delta",
+      index,
+      // Use input_json_delta to stream structured status updates
+      delta: { type: "input_json_delta", partial_json: partialJson },
+    };
+    await this.writeClaudeEvent(event);
+  }
+
+  async webSearchResultStop(index: number) {
+    const event: RawContentBlockStopEvent = {
+      type: "content_block_stop",
+      index,
+    };
+    await this.writeClaudeEvent(event);
+  }
+
   async messageDelta(
     delta: RawMessageDeltaEvent["delta"],
     usage: RawMessageDeltaEvent["usage"]
