@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { SSEWriter } from "./sse-writer";
-import { EventLogger } from "./logger";
+import type { ClaudeSSEWriter } from "./claude-sse-writer";
+import { EventLogger } from "../logging/logger";
 import { ContentBlockManager } from "./content-block-manager";
 import type {
   ResponseStreamEvent as OpenAIResponseStreamEvent,
@@ -27,7 +27,7 @@ export class StreamState {
   private callIdMapping: Map<string, string> = new Map(); // Maps OpenAI call_id to Claude tool_use_id
 
   constructor(
-    private sse: SSEWriter,
+    private sse: ClaudeSSEWriter,
     logEnabled: boolean = process.env.LOG_EVENTS === "true"
   ) {
     this.messageId = randomUUID();

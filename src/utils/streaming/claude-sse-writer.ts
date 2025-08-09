@@ -1,4 +1,4 @@
-import type { SSEMessage, SSEStreamingApi } from "hono/streaming";
+import type { SSEStreamingApi } from "hono/streaming";
 import type {
   RawMessageStreamEvent,
   RawMessageStartEvent,
@@ -8,21 +8,18 @@ import type {
   RawContentBlockDeltaEvent,
   RawContentBlockStopEvent,
 } from "@anthropic-ai/sdk/resources/messages";
+import { SSEWriter } from "./sse-writer";
 
-export class SSEWriter {
-  constructor(private stream: SSEStreamingApi) {}
-
-  private async write(event: RawMessageStreamEvent) {
-    const msg: SSEMessage = {
-      event: event.type,
-      data: JSON.stringify(event),
-    };
-    //    console.log(`[SSE]`, JSON.stringify(event, null, 2));
-    await this.stream.writeSSE(msg);
+/**
+ * Claude-specific SSE Writer for sending Claude API events
+ */
+export class ClaudeSSEWriter extends SSEWriter {
+  constructor(stream: SSEStreamingApi) {
+    super(stream);
   }
 
-  get closed(): boolean {
-    return this.stream.closed;
+  private async writeClaudeEvent(event: RawMessageStreamEvent) {
+    await this.sendEvent(event.type, event);
   }
 
   async messageStart(id: string) {
@@ -46,7 +43,7 @@ export class SSEWriter {
         },
       },
     };
-    await this.write(event);
+    await this.writeClaudeEvent(event);
   }
 
   async textStart(index: number) {
@@ -55,7 +52,7 @@ export class SSEWriter {
       index,
       content_block: { type: "text", text: "", citations: [] },
     };
-    await this.write(event);
+    await this.writeClaudeEvent(event);
   }
 
   async deltaText(index: number, delta: string) {
@@ -64,7 +61,7 @@ export class SSEWriter {
       index,
       delta: { type: "text_delta", text: delta },
     };
-    await this.write(event);
+    await this.writeClaudeEvent(event);
   }
 
   async textStop(index: number) {
@@ -72,7 +69,7 @@ export class SSEWriter {
       type: "content_block_stop",
       index,
     };
-    await this.write(event);
+    await this.writeClaudeEvent(event);
   }
 
   async toolStart(
@@ -89,7 +86,7 @@ export class SSEWriter {
         input: item.input ?? {},
       },
     };
-    await this.write(event);
+    await this.writeClaudeEvent(event);
   }
 
   async toolArgsDelta(index: number, partialJson: string) {
@@ -98,7 +95,7 @@ export class SSEWriter {
       index,
       delta: { type: "input_json_delta", partial_json: partialJson },
     };
-    await this.write(event);
+    await this.writeClaudeEvent(event);
   }
 
   async toolStop(index: number) {
@@ -106,7 +103,7 @@ export class SSEWriter {
       type: "content_block_stop",
       index,
     };
-    await this.write(event);
+    await this.writeClaudeEvent(event);
   }
 
   async messageDelta(
@@ -118,23 +115,11 @@ export class SSEWriter {
       delta,
       usage,
     };
-    await this.write(event);
+    await this.writeClaudeEvent(event);
   }
 
   async messageStop() {
     const event: RawMessageStopEvent = { type: "message_stop" };
-    await this.write(event);
-  }
-
-  async ping() {
-    const msg: SSEMessage = { data: "" };
-    await this.stream.writeSSE(msg);
-  }
-
-  async error(_type: string, message: string) {
-    const msg: SSEMessage = {
-      data: JSON.stringify({ type: "error", error: { type: _type, message } }),
-    };
-    await this.stream.writeSSE(msg);
+    await this.writeClaudeEvent(event);
   }
 }
