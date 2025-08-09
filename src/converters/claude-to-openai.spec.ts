@@ -15,11 +15,7 @@ import type {
   EasyInputMessage,
   ResponseInputImage,
 } from "openai/resources/responses/responses";
-import {
-  convertClaudeImageToOpenAI,
-  convertToolResult,
-  convertClaudeMessage,
-} from "./message-converter/claude-to-openai/image";
+import { convertClaudeImageToOpenAI } from "./message-converter/claude-to-openai/image";
 import { convertToolResult } from "./message-converter/claude-to-openai/tool";
 import { convertClaudeMessage } from "./message-converter/claude-to-openai/message";
 

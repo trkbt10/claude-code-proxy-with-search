@@ -9,7 +9,7 @@ import type {
 import type { ResponsesModel as OpenAIResponseModel } from "openai/resources/shared";
 import { convertClaudeMessage } from "./message";
 import { convertClaudeToolToOpenAI } from "./tool";
-import { webSearchPreviewFunction } from "../../../tools/definitions";
+import { createWebSearchPreviewDefinition } from "./tool-definitions";
 
 /**
  * Convert Claude request to OpenAI Responses API request
@@ -79,7 +79,7 @@ export function claudeToResponses(
 
   const tools: OpenAITool[] = [
     ...(toolsWithoutWebSearchPreview || []),
-    webSearchPreviewFunction,
+    createWebSearchPreviewDefinition(),
   ];
 
   let tool_choice: any = "auto";
