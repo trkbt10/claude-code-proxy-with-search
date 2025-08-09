@@ -13,7 +13,7 @@ import { convertClaudeImageToOpenAI } from "./image";
 import { convertToolResult } from "./tool";
 import { getToolChainValidator } from "../../../utils/validation/tool-chain-validator";
 import { logDebug } from "../../../utils/logging/migrate-logger";
-import { CallIdManager } from "../../../utils/mapping/call-id-manager";
+import { UnifiedIdManager as CallIdManager } from "../../../utils/id-management/unified-id-manager";
 
 /**
  * Convert Claude message to OpenAI input items

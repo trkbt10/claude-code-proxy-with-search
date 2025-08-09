@@ -18,7 +18,7 @@ import {
   createTextEditorDefinition,
 } from "./tool-definitions";
 import { normalizeJSONSchemaForOpenAI } from "./schema-helpers";
-import { CallIdManager } from "../../../utils/mapping/call-id-manager";
+import { UnifiedIdManager as CallIdManager, IdFormat } from "../../../utils/id-management/unified-id-manager";
 
 /**
  * Convert tool result from Claude format to OpenAI format
@@ -61,7 +61,7 @@ export function convertToolResult(
     console.warn(
       `[WARN] Using tool_use_id as fallback call_id: ${block.tool_use_id}`
     );
-    call_id = CallIdManager.fixIdPrefix(block.tool_use_id, "tool_result_fallback");
+    call_id = IdFormat.fixOpenAIPrefix(block.tool_use_id, "tool_result_fallback");
   } else {
     console.log(
       `[DEBUG] Found call_id ${call_id} for tool_use_id ${block.tool_use_id}`
@@ -69,9 +69,9 @@ export function convertToolResult(
   }
 
   // Don't fix the call_id if it already has a valid prefix
-  const finalCallId = CallIdManager.isValidPrefix(call_id) 
+  const finalCallId = IdFormat.isValidOpenAIPrefix(call_id) 
     ? call_id 
-    : CallIdManager.fixIdPrefix(call_id, "tool_result_call_id");
+    : IdFormat.fixOpenAIPrefix(call_id, "tool_result_call_id");
 
   // Generate a unique ID for this tool result (OpenAI format)
   const resultId = `fc_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;

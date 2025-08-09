@@ -10,7 +10,7 @@ import type { ResponsesModel as OpenAIResponseModel } from "openai/resources/sha
 import { convertClaudeMessage } from "./message";
 import { convertClaudeToolToOpenAI } from "./tool";
 import { createWebSearchPreviewDefinition } from "./tool-definitions";
-import { CallIdManager } from "../../../utils/mapping/call-id-manager";
+import { UnifiedIdManager as CallIdManager } from "../../../utils/id-management/unified-id-manager";
 
 /**
  * Convert Claude request to OpenAI Responses API request
@@ -38,7 +38,7 @@ export function claudeToResponses(
     ? req.system.map((b) => b.text).join("\n\n")
     : req.system ?? undefined;
 
-  const input: OpenAIResponses.ResponseInputItem[] = [];
+  let input: OpenAIResponses.ResponseInputItem[] = [];
 
   // Process all messages to build the full conversation context
   // The Responses API needs the complete conversation history in each request
@@ -93,6 +93,37 @@ export function claudeToResponses(
         );
       }
     }
+  }
+
+  // Post-process: drop any function_call items that do not have a matching
+  // function_call_output in THIS request. This avoids OpenAI 400 errors:
+  // "No tool output found for function call <call_id>".
+  // Rationale: function_call items in input should only be used to pair with
+  // their outputs; otherwise, let the model decide tool calls.
+  const outputIds = new Set<string>();
+  for (const item of input) {
+    if (item.type === "function_call_output" && "call_id" in item && item.call_id) {
+      outputIds.add(item.call_id);
+    }
+  }
+
+  const beforeLen = input.length;
+  input = input.filter((item) => {
+    if (item.type === "function_call" && "call_id" in item && item.call_id) {
+      const keep = outputIds.has(item.call_id);
+      if (!keep) {
+        console.warn(
+          `[WARN] Dropping function_call without matching output in current request: call_id=${item.call_id}`
+        );
+      }
+      return keep;
+    }
+    return true;
+  });
+  if (beforeLen !== input.length) {
+    console.log(
+      `[DEBUG] Filtered input items. Before=${beforeLen} After=${input.length}`
+    );
   }
 
   const toolsWithoutWebSearchPreview: OpenAITool[] | undefined = req.tools

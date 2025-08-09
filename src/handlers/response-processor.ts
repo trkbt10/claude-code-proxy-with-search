@@ -11,14 +11,14 @@ import { convertOpenAIResponseToClaude } from "../converters/message-converter/o
 import { conversationStore } from "../utils/conversation/conversation-store";
 import { claudeToResponses } from "../converters/message-converter/claude-to-openai/request";
 import { logError, logInfo, logDebug, logUnexpected, logRequestResponse, logPerformance } from "../utils/logging/migrate-logger";
-import { callIdRegistry } from "../utils/mapping/call-id-manager";
+import { unifiedIdRegistry as callIdRegistry } from "../utils/id-management/unified-id-manager";
 
 export type ProcessorConfig = {
   requestId: string;
   conversationId: string;
   openai: OpenAI;
   claudeReq: ClaudeMessageCreateParams;
-  modelResolver: (model: any) => string;
+  modelResolver: (model: ClaudeMessageCreateParams['model']) => string;
   stream: boolean;
   signal?: AbortSignal; // Support for request cancellation
 };
@@ -39,7 +39,7 @@ function handleError(
   if (
     error instanceof Error &&
     "status" in error &&
-    (error as any).status === 400 &&
+    (error as Error & { status?: number }).status === 400 &&
     error.message?.includes("No tool output found")
   ) {
     // Generate debug report for tool output errors

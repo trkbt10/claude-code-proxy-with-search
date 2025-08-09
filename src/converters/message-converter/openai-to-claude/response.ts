@@ -5,7 +5,7 @@ import type {
   ToolUseBlock,
   ContentBlock
 } from "@anthropic-ai/sdk/resources/messages";
-import { CallIdManager } from "../../../utils/mapping/call-id-manager";
+import { UnifiedIdManager as CallIdManager } from "../../../utils/id-management/unified-id-manager";
 
 export function convertOpenAIResponseToClaude(
   openaiResponse: OpenAIResponse,

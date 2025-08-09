@@ -1,9 +1,19 @@
 /**
  * Represents the context of a conversation session
  */
+// Type for message content
+type MessageContent = string | Record<string, unknown>;
+
+// Type for tool call
+interface ToolCall {
+  id: string;
+  name: string;
+  arguments?: Record<string, unknown> | string;
+}
+
 interface ConversationContext {
-  messages: any[];
-  lastToolCalls?: Record<string, any>;
+  messages: MessageContent[];
+  lastToolCalls?: Record<string, ToolCall>;
   lastResponseId?: string;
   callIdMapping?: Map<string, string>; // Maps OpenAI call_id to Claude tool_use_id
   createdAt: Date;

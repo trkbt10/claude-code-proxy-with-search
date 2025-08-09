@@ -87,10 +87,8 @@ export class StreamState {
           this.responseId = createdEvent.response.id;
           console.log(`[StreamState] Captured response ID: ${this.responseId}`);
         }
-        const { block: textBlock, metadata: textMeta } = this.contentManager.addTextBlock();
-        this.currentTextBlockId = textMeta.id;
-        await this.sse.textStart(textMeta.index);
-        this.contentManager.markStarted(textMeta.id);
+        // Do not pre-create a text block here; wait until real content arrives
+        // via output_text.delta or content_part.added to avoid empty/duplicate blocks.
         return;
 
       case "response.output_text.delta":
@@ -205,15 +203,13 @@ export class StreamState {
           }
         }
         
-        const { block: newTextBlock, metadata: newTextMeta } = this.contentManager.addTextBlock();
+        // Create a text block only when content arrives
+        const { metadata: newTextMeta } = this.contentManager.addTextBlock();
         this.currentTextBlockId = newTextMeta.id;
         await this.sse.textStart(newTextMeta.index);
         this.contentManager.markStarted(newTextMeta.id);
-        if (contentAddedEvent.part.type === "output_text") {
-          await this.sse.deltaText(
-            newTextMeta.index,
-            contentAddedEvent.part.text
-          );
+        if (contentAddedEvent.part.type === "output_text" && contentAddedEvent.part.text) {
+          await this.sse.deltaText(newTextMeta.index, contentAddedEvent.part.text);
           this.contentManager.updateTextContent(newTextMeta.id, contentAddedEvent.part.text);
         }
 
@@ -253,13 +249,7 @@ export class StreamState {
           ? this.contentManager.getBlock(this.currentTextBlockId)
           : this.contentManager.getCurrentTextBlock();
         if (textBlockResult) {
-          if (contentDoneEvent.part.type === "output_text") {
-            await this.sse.deltaText(
-              textBlockResult.metadata.index,
-              contentDoneEvent.part.text
-            );
-            this.contentManager.updateTextContent(textBlockResult.metadata.id, contentDoneEvent.part.text);
-          }
+          // Do not append content again on 'done'; it was already sent in 'added' or via deltas
           await this.sse.textStop(textBlockResult.metadata.index);
           this.contentManager.markCompleted(textBlockResult.metadata.id);
         }

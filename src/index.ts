@@ -108,9 +108,16 @@ app.post("/v1/messages", async (c) => {
   const req = c.req.raw;
   
   // Handle client disconnect (works in Node.js environments)
-  if ('on' in req && typeof req.on === 'function') {
-    (req as any).on('close', () => {
-      if (!(req as any).complete) {
+  // Type guard for Node.js request with event emitter
+  interface NodeRequest extends Request {
+    on?(event: string, listener: () => void): void;
+    complete?: boolean;
+  }
+  
+  const nodeReq = req as NodeRequest;
+  if (nodeReq.on && typeof nodeReq.on === 'function') {
+    nodeReq.on('close', () => {
+      if (!nodeReq.complete) {
         console.log(`[Request ${requestId}] Client disconnected, aborting OpenAI request`);
         abortController.abort();
         if (timeoutId) clearTimeout(timeoutId);
@@ -120,9 +127,10 @@ app.post("/v1/messages", async (c) => {
   
   // For environments where the request doesn't have event emitters,
   // we can also check the abort signal from the request itself if available
-  const requestSignal = (req as any).signal;
-  if (requestSignal && requestSignal instanceof AbortSignal) {
-    requestSignal.addEventListener('abort', () => {
+  // Note: We can't extend Request interface, so we just cast and check
+  const reqWithSignal = req as Request & { signal?: AbortSignal };
+  if (reqWithSignal.signal && reqWithSignal.signal instanceof AbortSignal) {
+    reqWithSignal.signal.addEventListener('abort', () => {
       console.log(`[Request ${requestId}] Request aborted by client`);
       abortController.abort();
       if (timeoutId) clearTimeout(timeoutId);
@@ -147,14 +155,15 @@ app.post("/v1/messages", async (c) => {
     // Clear timeout if request completes successfully
     if (timeoutId) clearTimeout(timeoutId);
     return response;
-  } catch (error: any) {
+  } catch (error) {
     // Clear timeout on error
     if (timeoutId) clearTimeout(timeoutId);
     
     // Handle aborted requests gracefully
-    if (error.message === 'Request cancelled by client' || abortController.signal.aborted) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (errorMessage === 'Request cancelled by client' || abortController.signal.aborted) {
       console.log(`[Request ${requestId}] Request was cancelled`);
-      return c.text('Request cancelled', 499); // 499 Client Closed Request
+      return c.text('Request cancelled', 499 as Parameters<typeof c.text>[1]); // 499 Client Closed Request
     }
     throw error;
   }

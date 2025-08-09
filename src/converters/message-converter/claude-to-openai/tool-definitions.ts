@@ -26,7 +26,7 @@ export function createBashDefinition(t: ToolBash20250124): OpenAITool {
   // Base definition for bash tool
   const baseDefinition: OpenAITool = {
     name: "bash",
-    description: "サーバー上でシェルコマンドを実行し、出力を返します。",
+    description: "Executes shell commands on the server and returns the output.",
     type: "function",
     parameters: {
       type: "object",
@@ -34,7 +34,7 @@ export function createBashDefinition(t: ToolBash20250124): OpenAITool {
         command: {
           type: "array",
           items: { type: "string" },
-          description: '実行するコマンドと引数のリスト（例: ["ls", "-la"]）',
+          description: 'List of the command and its arguments (e.g., ["ls", "-la"])',
         },
       },
       required: ["command"],
@@ -53,17 +53,17 @@ export function createBashDefinition(t: ToolBash20250124): OpenAITool {
 export function createWebSearchDefinition(t: WebSearchTool20250305): OpenAITool {
   const baseDefinition: OpenAITool = {
     name: "web_search",
-    description: "指定したクエリでウェブ検索を行い、結果を返します。",
+    description: "Performs a web search for the given query and returns the results.",
     type: "function",
     parameters: {
       type: "object",
       properties: {
-        query: { type: "string", description: "検索クエリ文字列" },
+        query: { type: "string", description: "Search query string" },
         ...(t.allowed_domains && {
           allowed_domains: {
             type: "array",
             items: { type: "string" },
-            description: "検索対象に含めるドメインのリスト",
+            description: "List of domains to include in search",
             default: t.allowed_domains,
           },
         }),
@@ -71,14 +71,14 @@ export function createWebSearchDefinition(t: WebSearchTool20250305): OpenAITool 
           blocked_domains: {
             type: "array",
             items: { type: "string" },
-            description: "検索対象から除外するドメインのリスト",
+            description: "List of domains to exclude from search",
             default: t.blocked_domains,
           },
         }),
         ...(t.max_uses && {
           max_uses: {
             type: "integer",
-            description: "ツールを呼び出せる最大回数",
+            description: "Maximum number of times the tool can be invoked",
             default: t.max_uses,
           },
         }),
@@ -110,17 +110,17 @@ export function createTextEditorDefinition(
 ): OpenAITool {
   const baseDefinition: OpenAITool = {
     name: "text_editor",
-    description: "指定された文字列内で検索・置換を行います。",
+    description: "Performs find-and-replace operations within the given text.",
     type: "function",
     parameters: {
       type: "object",
       properties: {
-        original: { type: "string", description: "元のテキスト" },
-        search: { type: "string", description: "検索文字列または正規表現" },
-        replace: { type: "string", description: "置換後の文字列" },
+        original: { type: "string", description: "Original text" },
+        search: { type: "string", description: "Search string or regular expression" },
+        replace: { type: "string", description: "Replacement string" },
         flags: {
           type: "string",
-          description: '正規表現フラグ（例: "g"、"i"）',
+          description: 'Regular expression flags (e.g., "g", "i")',
         },
       },
       required: ["original", "search", "replace"],
