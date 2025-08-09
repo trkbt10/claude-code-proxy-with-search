@@ -1,4 +1,4 @@
-import { encoding_for_model } from "@dqbd/tiktoken";
+import { encoding_for_model } from "tiktoken";
 import type { MessageCreateParams as ClaudeMessageCreateParams } from "@anthropic-ai/sdk/resources/messages";
 
 export function countTokens(claudeReq: ClaudeMessageCreateParams): number {

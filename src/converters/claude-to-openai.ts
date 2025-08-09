@@ -3,6 +3,8 @@ import type {
   ImageBlockParam as ClaudeContentBlockImage,
   ToolResultBlockParam as ClaudeContentBlockToolResult,
   MessageParam as ClaudeMessageParam,
+  Base64ImageSource,
+  URLImageSource,
 } from "@anthropic-ai/sdk/resources/messages";
 import type {
   ResponseFunctionToolCall as OpenAIResponseFunctionToolCall,
@@ -12,22 +14,19 @@ import type {
   ResponseInputMessageContentList as OpenAIResponseInputMessageContentList,
   ResponseInputItem as OpenAIResponseInputItem,
   EasyInputMessage as OpenAIResponseEasyInputMessage,
+  ResponseInputImage,
 } from "openai/resources/responses/responses";
-import type { ResponseInputImage } from "openai/resources/responses/responses";
 
 function isBase64ImageSource(
-  source: any
-): source is { type: "base64"; data: string; media_type: string } {
-  return (
-    source &&
-    source.type === "base64" &&
-    "data" in source &&
-    "media_type" in source
-  );
+  source: Base64ImageSource | URLImageSource
+): source is Base64ImageSource {
+  return source.type === "base64";
 }
 
-function isURLImageSource(source: any): source is { type: "url"; url: string } {
-  return source && source.type === "url" && "url" in source;
+function isURLImageSource(
+  source: Base64ImageSource | URLImageSource
+): source is URLImageSource {
+  return source.type === "url";
 }
 
 export function convertClaudeImageToOpenAI(
@@ -57,7 +56,7 @@ export function convertClaudeImageToOpenAI(
 export function convertToolResult(
   block: ClaudeContentBlockToolResult,
   callIdMapping?: Map<string, string>
-): any {
+): OpenAIResponseFunctionToolCallOutputItem {
   console.log(
     `[DEBUG] Converting tool_result: tool_use_id="${
       block.tool_use_id
@@ -84,7 +83,7 @@ export function convertToolResult(
       }
     }
   }
-  
+
   if (!call_id) {
     console.error(
       `[ERROR] No call_id mapping found for tool_use_id: ${block.tool_use_id}`
@@ -101,8 +100,9 @@ export function convertToolResult(
     );
   }
 
-  // Return only call_id and output as per test findings
+  // Return with id, type, call_id and output as per OpenAI ResponseFunctionToolCallOutputItem type
   return {
+    id: block.tool_use_id, // Use tool_use_id as the id
     type: "function_call_output",
     call_id: call_id,
     output:
@@ -157,7 +157,7 @@ export function convertClaudeMessage(
           }", input=${JSON.stringify(block.input)}`
         );
         flushBuffer();
-        
+
         // Log the current mapping state
         if (callIdMapping) {
           console.log(
@@ -176,7 +176,7 @@ export function convertClaudeMessage(
             }
           }
         }
-        
+
         if (!callId) {
           console.warn(
             `[WARN] No call_id mapping found for tool_use_id: ${block.id}, using id as fallback`
@@ -189,9 +189,9 @@ export function convertClaudeMessage(
             `[DEBUG] Found call_id ${callId} for tool_use_id ${block.id}`
           );
         }
-        
+
         // For function_call, we only need call_id, name, and arguments
-        const toolCall: any = {
+        const toolCall: OpenAIResponseFunctionToolCall = {
           type: "function_call",
           call_id: callId,
           name: block.name,
@@ -243,23 +243,25 @@ export function convertClaudeMessage(
     } else {
       // For assistant messages, we just push them as simple text
       if (message.role === "assistant") {
-        const textContent = buffer.map(b => b.text).join("");
+        const textContent = buffer.map((b) => b.text).join("");
         result.push({
           role: message.role,
           content: textContent,
         });
       } else {
         // For user messages, we use the content array format
-        const content: OpenAIResponseInputMessageContentList = buffer.map((b) => {
-          switch (b.type) {
-            case "text":
-              const inputTextItem: OpenAIResponseInputText = {
-                type: "input_text",
-                text: b.text,
-              };
-              return inputTextItem;
+        const content: OpenAIResponseInputMessageContentList = buffer.map(
+          (b) => {
+            switch (b.type) {
+              case "text":
+                const inputTextItem: OpenAIResponseInputText = {
+                  type: "input_text",
+                  text: b.text,
+                };
+                return inputTextItem;
+            }
           }
-        });
+        );
 
         result.push({
           role: message.role,
