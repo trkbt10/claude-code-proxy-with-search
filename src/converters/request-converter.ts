@@ -19,17 +19,6 @@ import {
 } from "../tools/definitions";
 import { normalizeJSONSchemaForOpenAI } from "./schema-helpers";
 
-export const DEFAULT_OPENAI_MODEL: OpenAIResponseModel =
-  (process.env.OPENAI_MODEL as OpenAIResponseModel) || "gpt-4.1";
-
-export const modelMap: Partial<Record<ClaudeModel, OpenAIResponseModel>> = {
-  "claude-3-5-sonnet-20241022": DEFAULT_OPENAI_MODEL,
-  "claude-3-5-haiku-20241022": DEFAULT_OPENAI_MODEL,
-  "claude-3-sonnet-20240229": DEFAULT_OPENAI_MODEL,
-  "claude-3-haiku-20240307": DEFAULT_OPENAI_MODEL,
-  "claude-3-opus-20240229": DEFAULT_OPENAI_MODEL,
-};
-
 function isClientTool(t: ClaudeToolUnion): t is ClaudeTool {
   return "input_schema" in t;
 }
@@ -70,11 +59,11 @@ function convertClaudeToolToOpenAI(
 
 export function claudeToResponses(
   req: ClaudeMessageCreateParamsBase,
+  modelResolver: (model: ClaudeModel) => OpenAIResponseModel,
   previousResponseId?: string,
   callIdMapping?: Map<string, string>
 ): OpenAIResponses.ResponseCreateParams {
-  const model: OpenAIResponseModel =
-    modelMap[req.model] ?? DEFAULT_OPENAI_MODEL;
+  const model: OpenAIResponseModel = modelResolver(req.model);
   const instructions = Array.isArray(req.system)
     ? req.system.map((b) => b.text).join("\n\n")
     : req.system ?? undefined;
@@ -103,13 +92,17 @@ export function claudeToResponses(
     console.log(
       `[DEBUG] Converted ${message.role} message to ${convertedItems.length} items`
     );
-    
+
     // Log specific items for debugging
     for (const item of convertedItems) {
       if (item.type === "function_call" && "call_id" in item) {
-        console.log(`[DEBUG] function_call: id=${item.id}, call_id=${item.call_id}, name=${item.name}`);
+        console.log(
+          `[DEBUG] function_call: id=${item.id}, call_id=${item.call_id}, name=${item.name}`
+        );
       } else if (item.type === "function_call_output" && "call_id" in item) {
-        console.log(`[DEBUG] function_call_output: id=${item.id}, call_id=${item.call_id}, status=${item.status}`);
+        console.log(
+          `[DEBUG] function_call_output: id=${item.id}, call_id=${item.call_id}, status=${item.status}`
+        );
       }
     }
   }

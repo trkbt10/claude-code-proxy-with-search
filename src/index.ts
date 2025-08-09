@@ -27,7 +27,11 @@ const app = new Hono();
 
 // Type guard for error with status
 function isErrorWithStatus(err: unknown): err is Error & { status: number } {
-  return err instanceof Error && "status" in err && typeof (err as Error & { status: unknown }).status === "number";
+  return (
+    err instanceof Error &&
+    "status" in err &&
+    typeof (err as Error & { status: unknown }).status === "number"
+  );
 }
 
 // グローバルエラーハンドラー
@@ -95,7 +99,7 @@ app.post("/v1/messages", async (c) => {
     `[Request ${requestId}] Incoming Claude Request (conversation: ${conversationId}):`,
     JSON.stringify(claudeReq, null, 2)
   );
-  
+
   // Log existing call_id mapping from context
   if (context.callIdMapping && context.callIdMapping.size > 0) {
     console.log(
@@ -105,7 +109,14 @@ app.post("/v1/messages", async (c) => {
   }
 
   // Pass previous response ID and call_id mapping to the converter
-  const openaiReq = claudeToResponses(claudeReq, context.lastResponseId, context.callIdMapping);
+  const openaiReq = claudeToResponses(
+    claudeReq,
+    (model) => {
+      return process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
+    },
+    context.lastResponseId,
+    context.callIdMapping
+  );
 
   if (context.lastResponseId) {
     console.log(
@@ -130,14 +141,18 @@ app.post("/v1/messages", async (c) => {
         );
       }
 
-      const { message: claudeResponse, callIdMapping } = convertOpenAIResponseToClaude(response);
-      
+      const { message: claudeResponse, callIdMapping } =
+        convertOpenAIResponseToClaude(response);
+
       // Store call_id mapping for future requests
       if (callIdMapping.size > 0) {
-        console.log(`[Request ${requestId}] Storing call_id mappings:`, Array.from(callIdMapping.entries()));
+        console.log(
+          `[Request ${requestId}] Storing call_id mappings:`,
+          Array.from(callIdMapping.entries())
+        );
         conversationStore.update(conversationId, { callIdMapping });
       }
-      
+
       return c.json(claudeResponse);
     } catch (error: any) {
       console.error(`[Request ${requestId}] Non-streaming error:`, error);
@@ -227,7 +242,7 @@ app.post("/v1/messages", async (c) => {
       // Store the response ID and call_id mapping for future requests
       const responseId = state.getResponseId();
       const callIdMapping = state.getCallIdMapping();
-      
+
       const updates: any = {};
       if (responseId) {
         updates.lastResponseId = responseId;
@@ -235,15 +250,15 @@ app.post("/v1/messages", async (c) => {
           `[Request ${requestId}] Stored streaming response ID: ${responseId}`
         );
       }
-      
+
       if (callIdMapping.size > 0) {
         updates.callIdMapping = callIdMapping;
         console.log(
-          `[Request ${requestId}] Stored streaming call_id mappings:`, 
+          `[Request ${requestId}] Stored streaming call_id mappings:`,
           Array.from(callIdMapping.entries())
         );
       }
-      
+
       if (Object.keys(updates).length > 0) {
         conversationStore.update(conversationId, updates);
       }
