@@ -19,7 +19,9 @@ import {
   convertClaudeImageToOpenAI,
   convertToolResult,
   convertClaudeMessage,
-} from "./claude-to-openai";
+} from "./message-converter/claude-to-openai/image";
+import { convertToolResult } from "./message-converter/claude-to-openai/tool";
+import { convertClaudeMessage } from "./message-converter/claude-to-openai/message";
 
 describe("claude-to-openai converter", () => {
   beforeEach(() => {

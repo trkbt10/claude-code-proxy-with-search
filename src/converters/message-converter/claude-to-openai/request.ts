@@ -1,62 +1,19 @@
 import type {
-  Tool as ClaudeTool,
-  ToolUnion as ClaudeToolUnion,
   MessageCreateParamsBase as ClaudeMessageCreateParamsBase,
   Model as ClaudeModel,
 } from "@anthropic-ai/sdk/resources/messages";
 import type {
   Responses as OpenAIResponses,
   Tool as OpenAITool,
-  ResponseCreateParamsBase as OpenAIResponseCreateParamsBase,
 } from "openai/resources/responses/responses";
 import type { ResponsesModel as OpenAIResponseModel } from "openai/resources/shared";
-import { convertClaudeMessage } from "./claude-to-openai";
-import {
-  bashFunction,
-  webSearchFunction,
-  textEditorFunction,
-  webSearchPreviewFunction,
-} from "../tools/definitions";
-import { normalizeJSONSchemaForOpenAI } from "./schema-helpers";
+import { convertClaudeMessage } from "./message";
+import { convertClaudeToolToOpenAI } from "./tool";
+import { webSearchPreviewFunction } from "../../../tools/definitions";
 
-function isClientTool(t: ClaudeToolUnion): t is ClaudeTool {
-  return "input_schema" in t;
-}
-
-function convertClaudeToolToOpenAI(
-  t: ClaudeToolUnion
-): OpenAITool | OpenAITool[] {
-  if (isClientTool(t)) {
-    const schema = normalizeJSONSchemaForOpenAI(t.input_schema);
-
-    console.debug(
-      `[DEBUG] tool ${t.name} → cleaned parameters=`,
-      JSON.stringify(schema, null, 2)
-    );
-
-    return {
-      type: "function",
-      name: t.name,
-      description: t.description ?? "",
-      parameters: schema,
-      strict: true,
-    };
-  } else {
-    switch (t.name) {
-      case "bash":
-        return bashFunction;
-      case "web_search":
-        return webSearchFunction;
-      case "str_replace_editor":
-      case "str_replace_based_edit_tool":
-        return textEditorFunction;
-      default:
-        console.warn(t, "[WARN] Unknown tool type, returning empty array");
-    }
-    return [];
-  }
-}
-
+/**
+ * Convert Claude request to OpenAI Responses API request
+ */
 export function claudeToResponses(
   req: ClaudeMessageCreateParamsBase,
   modelResolver: (model: ClaudeModel) => OpenAIResponseModel,
@@ -135,7 +92,7 @@ export function claudeToResponses(
     tool_choice = "required";
   }
 
-  const baseParams: OpenAIResponseCreateParamsBase = {
+  const baseParams: OpenAIResponses.ResponseCreateParams = {
     model,
     input,
     tools,

@@ -1,117 +1,20 @@
 import type {
   TextBlock as ClaudeTextBlock,
-  ImageBlockParam as ClaudeContentBlockImage,
-  ToolResultBlockParam as ClaudeContentBlockToolResult,
   MessageParam as ClaudeMessageParam,
-  Base64ImageSource,
-  URLImageSource,
 } from "@anthropic-ai/sdk/resources/messages";
 import type {
   ResponseFunctionToolCall as OpenAIResponseFunctionToolCall,
-  ResponseFunctionToolCallOutputItem as OpenAIResponseFunctionToolCallOutputItem,
   ResponseInputText as OpenAIResponseInputText,
-  ResponseOutputText as OpenAIResponseOutputText,
   ResponseInputMessageContentList as OpenAIResponseInputMessageContentList,
   ResponseInputItem as OpenAIResponseInputItem,
   EasyInputMessage as OpenAIResponseEasyInputMessage,
-  ResponseInputImage,
 } from "openai/resources/responses/responses";
+import { convertClaudeImageToOpenAI } from "./image";
+import { convertToolResult } from "./tool";
 
-function isBase64ImageSource(
-  source: Base64ImageSource | URLImageSource
-): source is Base64ImageSource {
-  return source.type === "base64";
-}
-
-function isURLImageSource(
-  source: Base64ImageSource | URLImageSource
-): source is URLImageSource {
-  return source.type === "url";
-}
-
-export function convertClaudeImageToOpenAI(
-  block: ClaudeContentBlockImage
-): ResponseInputImage {
-  const src = block.source;
-
-  if (isBase64ImageSource(src)) {
-    return {
-      type: "input_image" as const,
-      image_url: `data:${src.media_type};base64,${src.data}`,
-      detail: "auto",
-    };
-  }
-
-  if (isURLImageSource(src)) {
-    return {
-      type: "input_image" as const,
-      image_url: src.url,
-      detail: "auto",
-    };
-  }
-
-  throw new Error("Unsupported image source");
-}
-
-export function convertToolResult(
-  block: ClaudeContentBlockToolResult,
-  callIdMapping?: Map<string, string>
-): OpenAIResponseFunctionToolCallOutputItem {
-  console.log(
-    `[DEBUG] Converting tool_result: tool_use_id="${
-      block.tool_use_id
-    }", content=${JSON.stringify(block.content)}`
-  );
-
-  // Log the current mapping state
-  if (callIdMapping) {
-    console.log(
-      `[DEBUG] Current call_id mappings (${callIdMapping.size} entries):`,
-      Array.from(callIdMapping.entries())
-    );
-  } else {
-    console.log("[DEBUG] No call_id mapping provided");
-  }
-
-  // Find the call_id for this tool_use_id
-  let call_id: string | undefined;
-  if (callIdMapping) {
-    for (const [cid, tid] of callIdMapping.entries()) {
-      if (tid === block.tool_use_id) {
-        call_id = cid;
-        break;
-      }
-    }
-  }
-
-  if (!call_id) {
-    console.error(
-      `[ERROR] No call_id mapping found for tool_use_id: ${block.tool_use_id}`
-    );
-    // Don't throw error, just use the tool_use_id as fallback
-    // This might happen in the first request when mapping isn't established yet
-    console.warn(
-      `[WARN] Using tool_use_id as fallback call_id: ${block.tool_use_id}`
-    );
-    call_id = block.tool_use_id;
-  } else {
-    console.log(
-      `[DEBUG] Found call_id ${call_id} for tool_use_id ${block.tool_use_id}`
-    );
-  }
-
-  // Return with id, type, call_id and output as per OpenAI ResponseFunctionToolCallOutputItem type
-  return {
-    id: block.tool_use_id, // Use tool_use_id as the id
-    type: "function_call_output",
-    call_id: call_id,
-    output:
-      typeof block.content === "string"
-        ? block.content
-        : JSON.stringify(block.content),
-  };
-}
-
+/**
+ * Convert Claude message to OpenAI input items
+ */
 export function convertClaudeMessage(
   message: ClaudeMessageParam,
   callIdMapping?: Map<string, string>

@@ -7,9 +7,9 @@ import { streamSSE } from "hono/streaming";
 import type { Context } from "hono";
 import type { MessageCreateParams as ClaudeMessageCreateParams } from "@anthropic-ai/sdk/resources/messages";
 import { streamingPipelineFactory } from "../utils/streaming/streaming-pipeline";
-import { convertOpenAIResponseToClaude } from "../converters/openai-to-claude";
+import { convertOpenAIResponseToClaude } from "../converters/message-converter/openai-to-claude/response";
 import { conversationStore } from "../utils/conversation/conversation-store";
-import { claudeToResponses } from "../converters/request-converter";
+import { claudeToResponses } from "../converters/message-converter/claude-to-openai/request";
 
 export type ProcessorConfig = {
   requestId: string;
